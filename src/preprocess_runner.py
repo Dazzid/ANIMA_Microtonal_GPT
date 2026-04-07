@@ -1,5 +1,5 @@
 """
-07_run_preprocess.py
+preprocess_runner.py
 ====================
 Parallel runner for dual-channel dataset formation.
 
@@ -14,13 +14,13 @@ Each worker:
 Usage
 -----
   # Full dataset, 20 workers:
-  python 07_run_preprocess.py --workers 20
+  python preprocess_runner.py --workers 20
 
   # Small test run (100 files, 4 workers):
-  python 07_run_preprocess.py --workers 4 --max-files 100
+  python preprocess_runner.py --workers 4 --max-files 100
 
   # Resume (skip already-processed files):
-  python 07_run_preprocess.py --workers 20 --resume
+  python preprocess_runner.py --workers 20 --resume
 """
 
 import argparse
@@ -58,7 +58,7 @@ def _worker_init():
 
     # These imports happen inside the worker process
     import importlib
-    tok_mod = importlib.import_module("05_midi_mpe_tokenization")
+    tok_mod = importlib.import_module("tokenizer")
 
     _worker_tokenizer = tok_mod.MPETokenizer()
 
@@ -77,7 +77,7 @@ def _worker_process_file(args):
 
     # Late import so the module is resolved inside the worker
     import importlib
-    preproc = importlib.import_module("06_preprocess_dual_channel")
+    preproc = importlib.import_module("preprocess")
 
     try:
         result = preproc.preprocess_song(
@@ -293,7 +293,7 @@ def main():
 
     # Save vocab
     import importlib
-    tok_mod = importlib.import_module("05_midi_mpe_tokenization")
+    tok_mod = importlib.import_module("tokenizer")
     tokenizer = tok_mod.MPETokenizer()
     tokenizer.save_vocab(str(output_dir / "vocab.json"))
 

@@ -1,9 +1,9 @@
 """
-10_generate.py
-==============
+generate.py
+===========
 Generation script for the trained GPT-2 53-TET dual-channel model.
 
-Loads a checkpoint from 09_train_gpt2.py and generates new microtonal
+Loads a checkpoint from train.py and generates new microtonal
 chord sequences using autoregressive sampling with live EigenSpace
 recomputation — each newly generated chord gets its true (α, β, γ, D)
 coordinates fed back into the model, rather than static defaults.
@@ -23,28 +23,28 @@ Sampling strategies
 Usage
 -----
   # Unconditional generation (256 new tokens):
-  python 10_generate.py
+  python generate.py
 
   # Use the best checkpoint:
-  python 10_generate.py --checkpoint ../checkpoints/best.pt
+  python generate.py --checkpoint ../checkpoints/best.pt
 
   # Control sampling:
-  python 10_generate.py --temperature 0.8 --top-k 50 --top-p 0.95
+  python generate.py --temperature 0.8 --top-k 50 --top-p 0.95
 
   # Generate more tokens:
-  python 10_generate.py --max-tokens 512
+  python generate.py --max-tokens 512
 
   # Generate multiple samples:
-  python 10_generate.py --num-samples 5
+  python generate.py --num-samples 5
 
   # Prompt with specific tokens:
-  python 10_generate.py --prompt "<start> CHORD_START DUR_4.0"
+  python generate.py --prompt "<start> CHORD_START DUR_4.0"
 
   # Export to MIDI:
-  python 10_generate.py --midi output.mid
+  python generate.py --midi output.mid
 
   # Interactive mode:
-  python 10_generate.py --interactive
+  python generate.py --interactive
 """
 
 import argparse
@@ -75,14 +75,14 @@ from eigenspace import EigenSpaceComputer
 # Import model architecture from training script
 # =============================================================================
 
-# We import the classes directly from 09_train_gpt2 to guarantee
+# We import the classes directly from train to guarantee
 # architecture parity with the checkpoint.
 from importlib import util as _importlib_util
 
 def _import_training_module():
-    """Import 09_train_gpt2 as a module."""
+    """Import train.py as a module."""
     spec = _importlib_util.spec_from_file_location(
-        "train_gpt2", _SRC_DIR / "09_train_gpt2.py"
+        "train", _SRC_DIR / "train.py"
     )
     mod = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -572,12 +572,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python 10_generate.py
-  python 10_generate.py --checkpoint ../checkpoints/best.pt --temperature 0.8
-  python 10_generate.py --max-tokens 512 --top-k 50 --num-samples 3
-  python 10_generate.py --prompt "<start> BAR CHORD_START DUR_4.0"
-  python 10_generate.py --midi output.mid
-  python 10_generate.py --interactive
+  python generate.py
+  python generate.py --checkpoint ../checkpoints/best.pt --temperature 0.8
+  python generate.py --max-tokens 512 --top-k 50 --num-samples 3
+  python generate.py --prompt "<start> BAR CHORD_START DUR_4.0"
+  python generate.py --midi output.mid
+  python generate.py --interactive
         """
     )
 

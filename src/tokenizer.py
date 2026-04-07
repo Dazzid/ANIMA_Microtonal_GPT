@@ -1,6 +1,6 @@
 """
-05_midi_mpe_tokenization.py
-===========================
+tokenizer.py
+============
 Tokenization module for 53-TET MPE MIDI files.
 
 Converts MIDI Polyphonic Expression (MPE) files into flat token sequences 
@@ -42,7 +42,7 @@ The model learns:
 
 Usage
 -----
-  from 05_midi_mpe_tokenization import MPETokenizer
+  from tokenizer import MPETokenizer
 
   tokenizer = MPETokenizer()
   tokens = tokenizer.encode_file("path/to/file.mid")

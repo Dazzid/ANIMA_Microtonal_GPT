@@ -1,6 +1,6 @@
 """
-09_train_gpt2.py
-================
+train.py
+========
 GPT-2 training script for 53-TET microtonal music generation.
 
 Dual-channel architecture:
@@ -13,7 +13,7 @@ as an additive embedding alongside the token + positional embeddings.
 
 Data
 ----
-Reads memory-mapped binary files produced by 08_tokenize_for_training.py:
+Reads memory-mapped binary files produced by pack_data.py:
   dataset/tokenized/
     train_tokens.bin, train_eigen.bin
     val_tokens.bin,   val_eigen.bin
@@ -22,16 +22,16 @@ Reads memory-mapped binary files produced by 08_tokenize_for_training.py:
 Usage
 -----
   # Default training:
-  python 09_train_gpt2.py
+  python train.py
 
   # Override hyperparameters:
-  python 09_train_gpt2.py --n-layer 8 --n-head 8 --n-embd 512 --batch-size 64
+  python train.py --n-layer 8 --n-head 8 --n-embd 512 --batch-size 64
 
   # Resume from checkpoint:
-  python 09_train_gpt2.py --resume checkpoints/latest.pt
+  python train.py --resume checkpoints/latest.pt
 
   # Quick test:
-  python 09_train_gpt2.py --max-iters 100 --eval-interval 10
+  python train.py --max-iters 100 --eval-interval 10
 """
 
 import argparse
@@ -125,7 +125,7 @@ class DualChannelBinaryDataset:
     """
     Memory-mapped dataset for dual-channel GPT-2 training.
 
-    Reads fixed-length padded sequences created by 08_tokenize_for_training.py.
+    Reads fixed-length padded sequences created by pack_data.py.
     Each song is stored as one or more sequences of exactly (block_size + 1)
     tokens. Short songs are padded with <pad> (id=0). No window ever crosses
     a song boundary.
@@ -686,7 +686,7 @@ def main():
     # ── Data ──
     data_dir = Path(args.data_dir)
     meta_path = data_dir / "meta.json"
-    assert meta_path.exists(), f"meta.json not found in {data_dir}. Run 08_tokenize_for_training.py first."
+    assert meta_path.exists(), f"meta.json not found in {data_dir}. Run pack_data.py first."
 
     with open(meta_path, 'r') as f:
         meta = json.load(f)

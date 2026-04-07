@@ -1,6 +1,6 @@
 """
-06_preprocess_dual_channel.py
-=============================
+preprocess.py
+=============
 Pre-processing pipeline for dual-channel training data.
 
 Produces aligned data for both channels of the architecture:
@@ -30,7 +30,7 @@ Key invariant:
 
 Usage
 -----
-  from src.preprocess_dual_channel import preprocess_song, preprocess_dataset
+  from preprocess import preprocess_song, preprocess_dataset
 
   # Single song
   result = preprocess_song("path/to/song.mid")
@@ -39,7 +39,7 @@ Usage
   preprocess_dataset("dataset/midi_files/53_tet_mpe", "dataset/preprocessed")
 
   # For generation (on-the-fly from token strings)
-  from src.preprocess_dual_channel import tokens_to_eigenspace_online
+  from preprocess import tokens_to_eigenspace_online
   eigen_4d, spans = tokens_to_eigenspace_online(token_strs, computer)
 """
 
@@ -62,14 +62,11 @@ from eigenspace import (
     N_EIGEN, TET_53,
 )
 
-# Tokenizer import — handle the "05_" prefix
-import importlib
-_tok_mod = importlib.import_module("05_midi_mpe_tokenization")
-MPETokenizer = _tok_mod.MPETokenizer
-parse_mpe_midi = _tok_mod.parse_mpe_midi
-clean_chords = _tok_mod.clean_chords
-CHORD_START_TOKEN = _tok_mod.CHORD_START_TOKEN
-CHORD_END_TOKEN = _tok_mod.CHORD_END_TOKEN
+# Tokenizer import
+from tokenizer import (
+    MPETokenizer, parse_mpe_midi, clean_chords,
+    CHORD_START_TOKEN, CHORD_END_TOKEN,
+)
 
 # Lazy torch
 _torch_module = None

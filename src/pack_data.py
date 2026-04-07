@@ -1,6 +1,6 @@
 """
-08_tokenize_for_training.py
-===========================
+pack_data.py
+============
 Converts preprocessed dual-channel JSONs into memory-mapped binary files
 optimized for GPT-2 training.
 
@@ -30,16 +30,16 @@ Output files
 Usage
 -----
   # Full dataset:
-  python 08_tokenize_for_training.py
+  python pack_data.py
 
   # Quick test (100 songs):
-  python 08_tokenize_for_training.py --max-files 100
+  python pack_data.py --max-files 100
 
   # Custom split ratio:
-  python 08_tokenize_for_training.py --val-ratio 0.05
+  python pack_data.py --val-ratio 0.05
 
   # Custom block size:
-  python 08_tokenize_for_training.py --block-size 1024
+  python pack_data.py --block-size 1024
 """
 
 import argparse
