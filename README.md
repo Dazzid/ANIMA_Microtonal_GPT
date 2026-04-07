@@ -1,6 +1,6 @@
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
-# Microtonal Data Formation
+# ANIMA Microtonal GPT
 
 [ANIMA](https://cordis.europa.eu/project/id/101203318) (Artificial INtelligence-based Interactive Microtonal Compositional Assistant) 
 This is a pipeline for creating hybrid 12-TET/53-TET MIDI chord progression datasets for training transformer models on microtonal harmony.
@@ -114,88 +114,9 @@ Progressive introduction of 53-TET microtonality.
 
 ### **Stage 4: Tokenization Strategy**
 
-Convert MIDI data to transformer-compatible token sequences with metadata prefixes.
 
-#### Sequence Structure
 
-Each sequence consists of two parts:
-1. **Metadata Header** - Musical context and properties
-2. **MIDI Content** - Note events with pitch bend information
 
-#### Hybrid Vocabulary Design
-
-##### Metadata Tokens (Sequence Prefix)
-- `<SONG_NAME>` - Song title or identifier
-- `<STYLE>` - Genre/style (jazz, bossa, swing, ballad, etc.)
-- `<KEY>` - Tonal center (C, Bb, F#m, etc.)
-- `<TEMPO>` - BPM value (60-240)
-- `<TIME_SIG>` - Time signature (4/4, 3/4, 5/4, etc.)
-- `<FORM>` - Song structure (AABA, ABAC, 12-bar blues, etc.)
-- `<TUNING>` - Tuning system (12-TET, 53-TET-10%, 53-TET-50%, 53-TET-100%)
-- `<BARS>` - Total number of bars
-
-##### Core MIDI Token Types
-- **Pitch**: 0-127 (standard MIDI, represents 12-TET base)
-- **Pitch Bend**: Discrete values (-100 to +100 in 2¢ steps ≈ 100 tokens)
-- **Time**: Quantized to 16th or 32nd notes
-- **Channel**: 1-15 (MPE channels for polyphonic pitch bend)
-- **Velocity**: Quantized to 8-16 levels
-
-##### Structural Tokens
-- `<BOS>`, `<EOS>` - Sequence boundaries
-- `<BAR>`, `<BEAT>` - Metrical structure
-- `<SECTION>` - Form sections (A, B, C, Bridge, Coda, etc.)
-
-#### Example Token Sequence (Note-Level with Metadata)
-```
-<BOS>
-<SONG_NAME_Autumn_Leaves>
-<STYLE_jazz_standard>
-<KEY_Gm>
-<TEMPO_120>
-<TIME_SIG_4/4>
-<FORM_AABA>
-<TUNING_53-TET-10%>
-<BARS_32>
-
-<SECTION_A> <BAR_1>
-<TIME_0> <NOTE_ON_55_ch2_v80> <BEND_ch2_+0>    # Root: G
-<TIME_0> <NOTE_ON_58_ch3_v75> <BEND_ch3_-14>   # Minor 3rd (microtonal)
-<TIME_0> <NOTE_ON_62_ch4_v72> <BEND_ch4_+0>    # Perfect 5th
-<TIME_480> <NOTE_OFF_55_ch2> <NOTE_OFF_58_ch3> <NOTE_OFF_62_ch4>
-
-<BAR_2>
-<TIME_0> <NOTE_ON_60_ch2_v80> <BEND_ch2_+0>    # Next chord...
-...
-<EOS>
-```
-
-#### Alternative: Compound Chord Tokens with Metadata
-```
-<BOS>
-<SONG_NAME_All_The_Things_You_Are>
-<STYLE_jazz_ballad>
-<KEY_Ab>
-<TEMPO_80>
-<TUNING_12-TET>
-
-<SECTION_A> <BAR_1>
-<CHORD root=Ab type=maj7 voices=[56,60,63,67] bends=[0,0,0,0] dur=1920>
-<BAR_2>
-<CHORD root=F type=m7 voices=[53,57,60,64] bends=[0,0,0,0] dur=1920>
-...
-<EOS>
-```
-
-#### Benefits of Metadata Prefix
-- **Conditioning**: Model can generate in specific styles, keys, or tuning systems
-- **Analysis**: Easy filtering and analysis of generated outputs by metadata
-- **Controllable Generation**: Users can specify desired characteristics
-- **Context**: Provides harmonic and stylistic context before processing notes
-
-**Trade-off**: Slightly longer sequences, but dramatically improves controllability
-
-**Status**: 🔄 Planned
 
 ---
 
@@ -205,21 +126,11 @@ Train transformer model on hybrid 12-TET/53-TET sequences.
 
 #### Architecture
 - **Model Size**: GPT-2 Small (124M parameters) - sufficient for this domain
-- **Context Window**: 1024 tokens (captures several progressions)
+- **Context Window**: 4096 tokens (captures several progressions)
 - **Positional Encoding**: EigenSpace chord reference as a positional dissonance perception model. 
 
 #### Training Strategies
 
-**Strategy A: Curriculum Learning** (Progressive)
-1. Train on 12-TET only
-2. Gradually introduce 10% microtonal
-3. Progress to 50% microtonal
-4. Finally train on 100% microtonal
-
-**Strategy B: Mixed Training** (Recommended First Attempt)
-- Train on all data levels simultaneously
-- Let model learn the spectrum of microtonality naturally
-- Simpler implementation
 
 #### Evaluation Metrics
 
@@ -228,10 +139,7 @@ Train transformer model on hybrid 12-TET/53-TET sequences.
 - Token prediction accuracy
 
 ##### Qualitative (Musical)
-- Generate progressions → render to MIDI → listen
-- **Harmonic Function**: Does it preserve functional harmony?
-- **Voice Leading**: Are transitions smooth and musically logical?
-- **Microtonal Coherence**: Do 53-TET inflections follow EigenSpace principles?
+
 
 **Status**: 🔄 Planned
 
