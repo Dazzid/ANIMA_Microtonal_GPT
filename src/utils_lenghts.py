@@ -1,0 +1,76 @@
+#intervalsFromC = {'C': 0.0, 'D': 2.0, 'E': 4.0, 'F': 5.0, 'G': 7.0, 'A': 9.0, 'B': 11.0, 'F#': 6.0, 'C#': 1.0, 'G#': 8.0, 'D#': 3.0, 'A#': 10.0, 'B-': 10.0, 'E-': 3.0, 'A-': 8.0, 'D-': 1.0, 'G-': 6.0, 'C-': 11.0}
+
+def getFifthCicle():
+    return {
+        "major": {
+            "0": "C",
+            "1": "G",
+            "2": "D",
+            "3": "A",
+            "4": "E",
+            "5": "B",
+            "6": "F#",
+            "-6": "Gb",
+            "-5": "Db",
+            "-4": "Ab",
+            "-3": "Eb",
+            "-2": "Bb",
+            "-1": "F",
+        },
+        "minor": {
+            "0": "A",
+            "1": "E",
+            "2": "B",
+            "3": "F#",
+            "4": "C#",
+            "5": "G#",
+            "6": "D#",
+            "-6": "Eb",
+            "-5": "Bb",
+            "-4": "F",
+            "-3": "C",
+            "-2": "G",
+            "-1": "D",
+        },
+    }
+    
+def getNoteDurations():
+    dict_notes_length = {
+        "type": {
+            "whole": 1.0,
+            "dotted_half": 0.75,
+            "double_triplet_quarter": 0.6666666666666666,
+            "half": 0.5,
+            "less_than_half": 0.428385416666667,
+            "dotted_quarter": 0.375,
+            "triplet_quarter": 0.3333333333333333,
+            "more_than_quarter": 0.285481770833333,
+            "quarter": 0.25,
+            "other_note": 0.222005208333333,
+            "quintuplet": 0.2,
+            "eighth": 0.125,
+            "less_than_eighth": 0.111002604166667,
+            "sixteenth": 0.0625,
+            "thirtysecond": 0.0325,
+            "sixtyfourth": 0.01625,
+        },
+        "duration": {
+            3072: "whole",
+            2304: "dotted_half",
+            2048: "double_triplet_quarter",
+            1536: "half",
+            1316: "less_than_half",
+            1152: "dotted_quarter",
+            1024: "triplet_quarter",
+            877: "more_than_quarter",
+            768: "quarter",
+            682: "other_note",
+            614: "quintuplet",
+            384: "eighth",
+            341: "less_than_eighth",
+            192: "sixteenth",
+            96: "thirtysecond",
+            48: "sixtyfourth",
+        },
+    }
+    return dict_notes_length
