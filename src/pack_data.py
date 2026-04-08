@@ -451,10 +451,10 @@ def main():
     # Eigenspace statistics (compute in float32 for precision)
     te = data['train_eigen'].astype(np.float32)
     eigen_stats = {
-        "alpha": {"mean": float(te[:, 0].mean()), "std": float(te[:, 0].std())},
-        "beta":  {"mean": float(te[:, 1].mean()), "std": float(te[:, 1].std())},
-        "gamma": {"mean": float(te[:, 2].mean()), "std": float(te[:, 2].std())},
-        "delta": {"mean": float(te[:, 3].mean()), "std": float(te[:, 3].std())},
+        "alpha": {"mean": float(te[:, :, 0].mean()), "std": float(te[:, :, 0].std())},
+        "beta":  {"mean": float(te[:, :, 1].mean()), "std": float(te[:, :, 1].std())},
+        "gamma": {"mean": float(te[:, :, 2].mean()), "std": float(te[:, :, 2].std())},
+        "delta": {"mean": float(te[:, :, 3].mean()), "std": float(te[:, :, 3].std())},
     }
 
     # ── Write metadata ──

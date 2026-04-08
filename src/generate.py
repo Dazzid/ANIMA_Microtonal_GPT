@@ -236,15 +236,37 @@ def generate_with_eigenspace(
         all_tokens_str.append(next_token)
 
         # ── EigenSpace update logic ──
+        # Default eigenspace for non-chord tokens (matches training data)
+        _DEFAULT_EIGEN = np.array([[1.0, 1.0, 2.0, 1.0]], dtype=np.float32)
+
         if recompute_interval == 'none':
             # Static defaults for every new token
-            default = np.array([[1.0, 1.0, 2.0, 0.0]], dtype=np.float32)
-            eigen_array = np.concatenate([eigen_array, default], axis=0)
+            eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
 
         elif recompute_interval == 'chord':
-            # FIXED: Recompute eigenspace after EVERY token to match training behavior
-            # During training, each token had eigenspace of the partial chord built so far
-            eigen_array = eigen_computer.compute_for_tokens(all_tokens_str)
+            # Recompute full eigenspace only when a chord is complete.
+            # During training, every token in a chord has that chord's
+            # FULL eigenspace.  We can't know the chord identity until
+            # CHORD_END, so we carry forward the last known eigenspace
+            # for in-progress chords and recompute at CHORD_END — the
+            # next forward pass then sees correct eigen for all completed
+            # chords.
+            if next_token == 'CHORD_END':
+                # Chord just finished — recompute the whole sequence
+                eigen_array = eigen_computer.compute_for_tokens(all_tokens_str)
+            elif next_token in ('BAR', 'REST', '<start>', '<end>', '<sep>'):
+                # Non-chord tokens get defaults (matching training)
+                eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
+            else:
+                # Inside an in-progress chord — inherit last eigenspace
+                if len(eigen_array) > 0:
+                    eigen_array = np.concatenate(
+                        [eigen_array, eigen_array[[-1]]], axis=0
+                    )
+                else:
+                    eigen_array = np.concatenate(
+                        [eigen_array, _DEFAULT_EIGEN], axis=0
+                    )
 
         elif recompute_interval == 'bar':
             if next_token in ('BAR', 'CHORD_END'):
@@ -255,8 +277,9 @@ def generate_with_eigenspace(
                         [eigen_array, eigen_array[[-1]]], axis=0
                     )
                 else:
-                    default = np.array([[1.0, 1.0, 2.0, 0.0]], dtype=np.float32)
-                    eigen_array = np.concatenate([eigen_array, default], axis=0)
+                    eigen_array = np.concatenate(
+                        [eigen_array, _DEFAULT_EIGEN], axis=0
+                    )
 
         # Stop conditions
         if stop_at_end and next_id == vocab.end_id:

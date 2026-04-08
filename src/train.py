@@ -77,8 +77,8 @@ class ModelConfig:
     eigen_hidden: int = 64        # hidden dim in eigenspace projection MLP
     # Intra-chord positional encoding
     max_local_pos: int = 20       # max tokens within a chord (CHORD_START..CHORD_END)
-    # Legacy sequential positional encoding (DISABLED in v2)
-    use_sequential_pos: bool = False
+    # Sequential positional encoding (song-level position)
+    use_sequential_pos: bool = True
 
 
 @dataclass
@@ -434,7 +434,7 @@ class GPT2(nn.Module):
         """
         Args:
             idx:     (B, T) int64 — token IDs
-            eigen:   (B, T, 3) float32 — eigenspace coordinates (optional)
+            eigen:   (B, T, 4) float32 — eigenspace coordinates (α, β, γ, δ)
             targets: (B, T) int64 — target token IDs (optional, for loss)
 
         Returns:
@@ -574,7 +574,7 @@ class GPT2(nn.Module):
 
             # Extend eigen with default values for generated tokens
             if eigen is not None:
-                default = torch.tensor([1.0, 1.0, 2.0, 0.0], device=eigen.device)
+                default = torch.tensor([1.0, 1.0, 2.0, 1.0], device=eigen.device)
                 default = default.view(1, 1, 4).expand(idx.size(0), 1, 4)
                 eigen = torch.cat((eigen, default), dim=1)
 
