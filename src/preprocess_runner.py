@@ -47,20 +47,22 @@ if str(_SRC_DIR) not in sys.path:
 
 # Per-worker global state (initialised once per process)
 _worker_tokenizer = None
+_worker_style_lookup = None
 
 
-def _worker_init():
+def _worker_init(style_lookup_json):
     """
     Initialise heavy resources once per worker process.
     Called automatically by ProcessPoolExecutor via initializer=.
     """
-    global _worker_tokenizer
+    global _worker_tokenizer, _worker_style_lookup
 
     # These imports happen inside the worker process
     import importlib
     tok_mod = importlib.import_module("tokenizer")
 
     _worker_tokenizer = tok_mod.MPETokenizer()
+    _worker_style_lookup = json.loads(style_lookup_json) if style_lookup_json else {}
 
 
 def _worker_process_file(args):
@@ -77,12 +79,28 @@ def _worker_process_file(args):
 
     # Late import so the module is resolved inside the worker
     import importlib
+    import re as _re
     preproc = importlib.import_module("preprocess")
+    tok_mod = importlib.import_module("tokenizer")
+
+    # Extract song name from MIDI filename for style lookup
+    # Pattern: NNNNN_SongName_Key_mode_type_X_label.mid
+    style_label = None
+    if _worker_style_lookup:
+        stem = Path(midi_path_str).stem
+        m = _re.match(r'\d+_(.+?)_[A-G][b#]?_(major|minor)_type_', stem)
+        if m:
+            song_name = m.group(1)
+            key = _re.sub(r'[^a-z0-9]', '', song_name.lower())
+            raw_style = _worker_style_lookup.get(key)
+            if raw_style:
+                style_label = tok_mod.classify_style(raw_style)
 
     try:
         result = preproc.preprocess_song(
             midi_path_str,
             tokenizer=_worker_tokenizer,
+            style_label=style_label,
         )
 
         if result is None:
@@ -91,6 +109,8 @@ def _worker_process_file(args):
         # Write compact JSON (no token_strs — saves ~40% disk)
         compact = {
             "file":          result["file"],
+            "type_label":    result.get("type_label"),
+            "style_label":   result.get("style_label"),
             "token_ids":     result["token_ids"],
             "eigenspace_4d": result["eigenspace_4d"],
             "chord_spans":   result["chord_spans"],
@@ -146,6 +166,24 @@ def main():
     songs_dir = output_dir / "songs"
     songs_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Build style lookup from metadata ──
+    import re as _re
+    metadata_dir = _ROOT_DIR / "dataset" / "metadata"
+    style_lookup = {}  # {normalized_song_name: raw_style}
+    if metadata_dir.is_dir():
+        for mf in metadata_dir.glob("*.json"):
+            try:
+                with open(mf, "r") as f:
+                    meta = json.load(f)
+                raw_style = meta.get("style")
+                song_name = meta.get("song_name") or mf.stem
+                if raw_style:
+                    key = _re.sub(r'[^a-z0-9]', '', song_name.lower())
+                    style_lookup[key] = raw_style
+            except Exception:
+                pass
+    style_lookup_json = json.dumps(style_lookup) if style_lookup else ""
+
     # ── Collect input files ──
     print("=" * 72)
     print("DUAL-CHANNEL DATASET FORMATION")
@@ -153,6 +191,7 @@ def main():
     print(f"  Input:   {midi_dir}")
     print(f"  Output:  {output_dir}")
     print(f"  Workers: {args.workers}")
+    print(f"  Style lookup: {len(style_lookup):,} songs with metadata")
 
     # rglob to find files in type subdirectories; exclude any 12_tet files in case
     # the parent midi_files/ dir was passed instead of 53_tet_mpe/
@@ -203,6 +242,7 @@ def main():
     with ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_worker_init,
+        initargs=(style_lookup_json,),
     ) as executor:
         # Submit all at once — executor handles queuing
         results_iter = executor.map(

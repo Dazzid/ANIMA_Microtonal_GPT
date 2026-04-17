@@ -97,7 +97,7 @@ def apply_reverb(audio, sample_rate, reverb_amount=0):
     
     return stereo
 
-def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='sine', reverb=0):
+def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='sine', reverb=0, save_path=None):
     """
     Renders MPE MIDI to audio data (numpy array) with correct timing, pitch bends, and ADSR envelope.
     
@@ -107,6 +107,7 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
         speed: Playback speed multiplier (default 1.2)
         waveform: Waveform type - 'sine', 'triangle', 'square', or 'clarinet' (default 'sine')
         reverb: Reverb amount as percentage (0-100), 0=no reverb, 100=maximum reverb
+        save_path: Optional path to save .wav file to disk
     
     Returns: (audio_data_int16, sample_rate)
     """
@@ -164,31 +165,68 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
                 if duration > 0.005:
                     note_events.append((start_time, duration, freq, vel))
 
+    # Flush any notes still active at end of file (missing note_off)
+    for key, (start_time, freq, vel) in active_notes.items():
+        duration = current_time - start_time
+        if duration > 0.005:
+            note_events.append((start_time, duration, freq, vel))
+    active_notes.clear()
+
     if not note_events:
         print("⚠️ No notes found to render!")
         return None, None
 
-    # --- ADSR Configuration (Natural Decay) ---
-    attack_time = 0.15    # Fast but soft attack
-    decay_time = 1.25      # Long decay (1s) to silence
-    sustain_level = 0.0   # No static sustain
-    release_time = 0.9    # Gentle release on note off
+    # Cap note durations — no single note should ring longer than max_note_dur.
+    # Training data can have conversion artifacts (e.g. 106s notes); generated
+    # data uses DUR tokens ≤ 16 beats.  A generous 10s cap covers all musical
+    # durations at any reasonable tempo while eliminating artifacts.
+    max_note_dur = 10.0  # seconds (after speed adjustment)
+    capped = 0
+    cleaned = []
+    for start, dur, freq, vel in note_events:
+        if dur > max_note_dur:
+            dur = max_note_dur
+            capped += 1
+        cleaned.append((start, dur, freq, vel))
+    note_events = cleaned
+    if capped:
+        print(f"  Capped {capped} note(s) to {max_note_dur}s max duration")
 
-    total_duration = max(t + d for t, d, _, _ in note_events) + release_time + 0.5
+    # --- ADSR Configuration (Dynamic — computed per note from its duration) ---
+    # Fixed release tail budget: at most 25% of note duration, capped at 0.4s, min 0.05s.
+    # Attack: 5% of duration, capped at 0.08s.
+    # Decay: 30% of duration, bringing level down to sustain.
+    # Sustain: remainder of gate at a level proportional to note length.
+    # This ensures every chord fills its own time slot without bleeding into the next.
+
+    max_release = max(t + d for t, d, _, _ in note_events) + 0.4 + 0.5
+    total_duration = max_release
     print(f"Rendering {len(note_events)} notes. Total duration: {total_duration:.2f}s (Speed: {speed}x)")
 
     # Synthesis
     num_samples = int(total_duration * sample_rate)
     audio = np.zeros(num_samples, dtype=np.float32)
 
-    # Pre-calculate envelope lengths in samples
-    att_len = int(attack_time * sample_rate)
-    dec_len = int(decay_time * sample_rate)
-    rel_len = int(release_time * sample_rate)
-
     for start, dur, freq, vel in note_events:
         start_idx = int(start * sample_rate)
         gate_len = int(dur * sample_rate)
+
+        # ── Dynamic ADSR times derived from note duration ──
+        # Gate is capped at 80% of the note slot — the remaining 20% is natural
+        # silence that separates chords and makes the progression feel articulated.
+        effective_dur = dur * 0.80
+        gate_len      = int(effective_dur * sample_rate)
+
+        attack_time   = min(0.06, effective_dur * 0.05)
+        decay_time    = effective_dur * 0.30
+        # Sustain level: longer notes sustain fuller; very short notes decay away
+        sustain_level = np.clip(0.50 + 0.30 * np.log1p(effective_dur) / np.log1p(4.0), 0.35, 0.80)
+        # Release: 15% of effective duration — short tail, ends well before next chord
+        release_time  = np.clip(effective_dur * 0.15, 0.03, 0.18)
+
+        att_len = int(attack_time  * sample_rate)
+        dec_len = int(decay_time   * sample_rate)
+        rel_len = int(release_time * sample_rate)
 
         # Buffer for this note (Gate + Release)
         total_note_len = gate_len + rel_len
@@ -206,7 +244,7 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
         current_val = 1.0
         if gate_len < att_len:
             current_val = float(actual_att) / att_len
-        
+
         # 2. Decay Phase
         remaining_gate = gate_len - cursor
         if remaining_gate > 0:
@@ -214,11 +252,11 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
             decay_curve = np.linspace(current_val, sustain_level, dec_len, endpoint=False)
             env[cursor : cursor + actual_dec] = decay_curve[:actual_dec]
             cursor += actual_dec
-            
+
             if actual_dec == dec_len:
                 current_val = sustain_level
             else:
-                current_val = decay_curve[actual_dec-1]
+                current_val = decay_curve[actual_dec - 1]
 
         # 3. Sustain Phase
         remaining_gate = gate_len - cursor
@@ -284,6 +322,11 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
         # Create stereo in (channels, samples) format
         audio_int16 = np.vstack([audio_mono, audio_mono])
     
+    if save_path is not None:
+        wav_out = audio_int16.T if audio_int16.ndim == 2 else audio_int16
+        wavfile.write(str(save_path), sample_rate, wav_out)
+        print(f'Saved: {Path(save_path).name}')
+
     return audio_int16, sample_rate
 
 def play_audio_data(audio_data, sample_rate):

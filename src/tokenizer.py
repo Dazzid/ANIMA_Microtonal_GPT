@@ -119,10 +119,148 @@ REST_TOKEN = "REST"
 # ROOT_0 = C (approx), ROOT_9 = D (approx), etc.
 ROOT_PREFIX = "ROOT"
 
+# Bar number tokens: BAR_1 … BAR_64 replace the anonymous BAR token.
+# Positional — the model learns "this is bar 5 of a 12-bar blues", etc.
+# 64 covers all practical song lengths (most jazz standards ≤ 32 bars).
+BAR_MAX = 64
+BAR_NUMBER_TOKENS = [f"BAR_{n}" for n in range(1, BAR_MAX + 1)]
+
+# Type conditioning tokens: encode the 53-TET transformation type
+# These are prepended at the START of each sequence (before <start>)
+# to give the model explicit control over which tuning system to generate in.
+# The 14 types correspond to the folder names in dataset/midi_files/53_tet_mpe/
+TYPE_PREFIX = "TYPE"
+TYPE_LABELS = [
+    "0_major",
+    "0_minor",
+    "1_minor",
+    "1_neutral",
+    "2_minor",
+    "2_subminor",
+    "3_major",
+    "3_minor",
+    "4_minor",
+    "4_upmajor",
+    "5_major_v2",
+    "5_minor",
+    "6_minor",
+    "6_neutral_n",
+]
+TYPE_TOKENS = [f"{TYPE_PREFIX}_{label}" for label in TYPE_LABELS]
+
+# Style conditioning tokens: encode the musical genre/style of the source song
+# These are prepended after the TYPE token at the START of each sequence.
+# Raw iReal Pro styles (131 unique values) are grouped into 10 canonical categories.
+STYLE_PREFIX = "STYLE"
+STYLE_LABELS = [
+    "jazz",
+    "bossa_samba",
+    "ballad",
+    "pop",
+    "rock",
+    "waltz",
+    "funk_soul",
+    "latin",
+    "blues",
+    "folk_country",
+]
+STYLE_TOKENS = [f"{STYLE_PREFIX}_{label}" for label in STYLE_LABELS]
+
+# Mapping from raw iReal Pro style strings to canonical STYLE labels
+_RAW_STYLE_TO_GROUP = None
+
+def _build_style_map():
+    """Build the raw-style → canonical-group mapping (lazy, cached)."""
+    global _RAW_STYLE_TO_GROUP
+    if _RAW_STYLE_TO_GROUP is not None:
+        return _RAW_STYLE_TO_GROUP
+
+    import re as _re
+    _RAW_STYLE_TO_GROUP = {}
+
+    # Keywords-based classification (order matters: first match wins)
+    # Mirrors formats.py logic: anything containing "rock" → rock (dominant).
+    # Band names (Beatles, Rolling Stones) also → rock.
+    _rules = [
+        # Rock FIRST — any style containing "rock" is rock (matches formats.py behavior)
+        # Also catches band names: Beatles, Rolling Stones, etc.
+        (r'rock|reggae|beatles|rolling.?stones', 'rock'),
+        # Ballad (after rock, so "Rock Ballad" → rock, but "Pop Ballad" → ballad)
+        (r'ballad', 'ballad'),
+        # Samba / Bossa (after rock, so "Samba-Rock" → rock)
+        (r'samba|bossa|choro|marchinha|maxixe|frevo|forr|bai[aã]o|afox[eé]|afro', 'bossa_samba'),
+        # Blues / Shuffle (after rock, so "Blues Rock" → rock)
+        (r'blues|shuffle', 'blues'),
+        # Waltz (after rock, so "Rock Waltz" → rock)
+        (r'waltz', 'waltz'),
+        # Jazz / Swing (broad — catches "medium swing", "up tempo swing", etc.)
+        (r'swing|jazz|fusion|even.?8|even.?16|moderately|deliberately|medium\s*slow|slowly|128\s*feel|medium\s*up$|up\s*tempo$|dreamlike', 'jazz'),
+        # Pop
+        (r'pop|disco|electro|musical', 'pop'),
+        # Funk / Soul / R&B
+        (r'funk|soul|r.?n.?b', 'funk_soul'),
+        # Latin (bolero, tango, son, salsa, etc.)
+        (r'latin|bolero|tango|son$|salsa|montuno|mambo|cha\s*cha|merengue|calypso|chacarera|cuban', 'latin'),
+        # Folk / Country / Worship
+        (r'folk|country|hymn|worship|gospel|march$', 'folk_country'),
+    ]
+
+    # We'll populate lazily when first called with actual style strings
+    _RAW_STYLE_TO_GROUP['__rules__'] = _rules
+    return _RAW_STYLE_TO_GROUP
+
+
+def classify_style(raw_style):
+    """
+    Map a raw iReal Pro style string to a canonical STYLE label.
+
+    Args:
+        raw_style (str): e.g. "Medium Swing", "Bossa Nova", "Rock Pop"
+
+    Returns:
+        str: Canonical label from STYLE_LABELS, or None if empty/unknown
+    """
+    if not raw_style or not raw_style.strip():
+        return None
+
+    import re as _re
+    style_map = _build_style_map()
+    rules = style_map['__rules__']
+    sl = raw_style.strip().lower()
+
+    for pattern, group in rules:
+        if _re.search(pattern, sl):
+            return group
+
+    # Fallback: if nothing matched, use 'jazz' (dominant class)
+    return 'jazz'
+
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+def _extract_type_label(midi_path):
+    """
+    Extract the transformation type label from a MIDI file path.
+    
+    Checks the parent folder name (e.g. "type_0_major") or filename suffix.
+    Returns the label portion after "type_" (e.g. "0_major"), or None.
+    """
+    p = Path(midi_path)
+    # Try parent folder name: "type_0_major" → "0_major"
+    parent = p.parent.name
+    if parent.startswith("type_"):
+        label = parent[5:]
+        if label in TYPE_LABELS:
+            return label
+    # Try filename: "..._type_0_major.mid" → "0_major"
+    stem = p.stem
+    for tl in TYPE_LABELS:
+        if f"type_{tl}" in stem:
+            return tl
+    return None
+
 
 def midi_bend_to_53tet_step(midi_note, pitch_bend_value):
     """
@@ -493,16 +631,30 @@ class MPETokenizer:
         
         # 2. Structural tokens
         tokens.extend([CHORD_START_TOKEN, CHORD_END_TOKEN, BAR_TOKEN, REST_TOKEN])
+
+        # 2a. Bar number tokens: BAR_1 … BAR_64
+        #     Replace anonymous BAR — model learns position within song form
+        tokens.extend(BAR_NUMBER_TOKENS)
         
         # 3. Duration tokens: DUR_<value>
         for dur in self.duration_grid:
             tokens.append(f"DUR_{dur}")
         
-        # 4. Root tokens: ROOT_<0..52> (53-TET pitch class of bass note)
+        # 4. Type conditioning tokens: TYPE_<label>
+        #    14 transformation types from the 53-TET voicing system
+        for label in TYPE_LABELS:
+            tokens.append(f"{TYPE_PREFIX}_{label}")
+        
+        # 5. Style conditioning tokens: STYLE_<label>
+        #    10 musical genre/style categories from iReal Pro metadata
+        for label in STYLE_LABELS:
+            tokens.append(f"{STYLE_PREFIX}_{label}")
+        
+        # 6. Root tokens: ROOT_<0..52> (53-TET pitch class of bass note)
         for r in range(TET_53):
             tokens.append(f"{ROOT_PREFIX}_{r}")
         
-        # 5. Compound pitch+velocity tokens: PV_<step>_<vel_bin>
+        # 7. Compound pitch+velocity tokens: PV_<step>_<vel_bin>
         #    Keeps intervallic contiguity within chords (no interleaved V_ tokens)
         for step in range(self.pitch_offset, self.max_pitch + 1):
             for v in range(1, self.num_vel_bins + 1):
@@ -517,7 +669,7 @@ class MPETokenizer:
     # Encoding: MIDI → Tokens
     # -----------------------------------------------------------------
     
-    def encode_chords(self, chords, add_start_end=True):
+    def encode_chords(self, chords, add_start_end=True, type_label=None, style_label=None):
         """
         Encode a list of chord events into a flat token sequence.
         
@@ -531,30 +683,54 @@ class MPETokenizer:
         Args:
             chords: List of chord dicts from parse_mpe_midi()
             add_start_end: Whether to wrap with <start>/<end> tokens
+            type_label: Transformation type label (e.g. "0_major", "2_subminor").
+                        If provided, a TYPE_<label> token is prepended after <start>.
+            style_label: Musical style label (e.g. "jazz", "blues").
+                        If provided, a STYLE_<label> token is inserted after TYPE.
         
         Returns:
             list[str]: Token string sequence
         """
         tokens = []
-        
+
         if add_start_end:
             tokens.append(START_TOKEN)
-        
-        last_bar = -1  # Track bar lines
-        
+
+        # Type conditioning token — tells the model which tuning system this is
+        if type_label is not None:
+            type_token = f"{TYPE_PREFIX}_{type_label}"
+            if type_token in self.token_to_id:
+                tokens.append(type_token)
+            else:
+                print(f"  Warning: unknown type label '{type_label}', skipping TYPE token")
+
+        # Style conditioning token — tells the model which musical genre this is
+        if style_label is not None:
+            style_token = f"{STYLE_PREFIX}_{style_label}"
+            if style_token in self.token_to_id:
+                tokens.append(style_token)
+            else:
+                print(f"  Warning: unknown style label '{style_label}', skipping STYLE token")
+
+        last_bar = -1  # Track bar lines (0-indexed)
+
         for i, chord in enumerate(chords):
-            # Insert BAR token at bar boundaries
-            current_bar = int(chord['onset_beats'] // self.beats_per_bar)
+            # Insert BAR_N token at bar boundaries
+            current_bar = int(chord['onset_beats'] // self.beats_per_bar)  # 0-indexed
             if current_bar > last_bar:
-                # Insert bar markers for each new bar we've entered
-                for _ in range(current_bar - max(0, last_bar)):
+                bars_to_emit = current_bar - max(0, last_bar)
+                for b in range(bars_to_emit):
                     if last_bar >= 0:  # Don't add BAR before the first chord
-                        tokens.append(BAR_TOKEN)
+                        bar_number = last_bar + b + 1 + 1  # 1-indexed
+                        if bar_number <= BAR_MAX:
+                            tokens.append(f"BAR_{bar_number}")
+                        else:
+                            tokens.append(BAR_TOKEN)
                 last_bar = current_bar
-            
+
             # Chord start
             tokens.append(CHORD_START_TOKEN)
-            
+
             # Duration = onset-to-onset delta (harmonic rhythm), not note-off
             if i < len(chords) - 1:
                 delta = chords[i + 1]['onset_beats'] - chord['onset_beats']
@@ -563,28 +739,28 @@ class MPETokenizer:
                 # Last chord: use its actual note-off duration
                 q_dur = quantize_duration(chord['duration_beats'])
             tokens.append(f"DUR_{q_dur}")
-            
+
             # Root = pitch class (mod 53) of the lowest note — explicit for the model
             sorted_notes = sorted(chord['notes'], key=lambda n: n['step_53'])[:MAX_CHORD_NOTES]
             if sorted_notes:
                 root_pc = sorted_notes[0]['step_53'] % TET_53
                 tokens.append(f"{ROOT_PREFIX}_{root_pc}")
-            
+
             # Notes as compound PV tokens (sorted low→high, preserves interval contiguity)
             for note in sorted_notes:
                 step = max(self.pitch_offset, min(self.max_pitch, note['step_53']))
                 vel_bin = quantize_velocity(note['velocity'], self.num_vel_bins)
                 tokens.append(f"PV_{step}_{vel_bin}")
-            
+
             # Chord end
             tokens.append(CHORD_END_TOKEN)
-        
+
         if add_start_end:
             tokens.append(END_TOKEN)
-        
+
         return tokens
     
-    def encode_file(self, midi_path, speed=1.0, add_start_end=True):
+    def encode_file(self, midi_path, speed=1.0, add_start_end=True, type_label=None, style_label=None):
         """
         Parse and tokenize a MIDI MPE file.
         
@@ -592,6 +768,11 @@ class MPETokenizer:
             midi_path: Path to MIDI file
             speed: Speed multiplier (applied to timing)
             add_start_end: Wrap with <start>/<end>
+            type_label: Transformation type (e.g. "0_major") for conditioning.
+                        If None, auto-detected from the file path (parent folder
+                        name like "type_0_major" or filename suffix).
+            style_label: Musical style (e.g. "jazz", "blues") for conditioning.
+                        If None, no STYLE token is inserted.
         
         Returns:
             list[str]: Token sequence, or empty list on failure
@@ -600,7 +781,11 @@ class MPETokenizer:
         if not chords:
             return []
         chords = clean_chords(chords)
-        return self.encode_chords(chords, add_start_end=add_start_end)
+        # Auto-detect type from path if not provided
+        if type_label is None:
+            type_label = _extract_type_label(midi_path)
+        return self.encode_chords(chords, add_start_end=add_start_end,
+                                  type_label=type_label, style_label=style_label)
     
     def encode_to_ids(self, tokens):
         """
@@ -663,8 +848,8 @@ class MPETokenizer:
         while i < len(tokens):
             tok = tokens[i]
             
-            if tok == BAR_TOKEN:
-                # BAR is a structural marker for the model to learn phrase/bar
+            if tok == BAR_TOKEN or tok.startswith('BAR_'):
+                # BAR / BAR_N is a structural marker for the model to learn phrase/bar
                 # boundaries. It does NOT advance time — timing comes solely
                 # from duration accumulation (onset-to-onset = duration in
                 # our chord-per-beat dataset). This avoids the double-counting
@@ -876,6 +1061,7 @@ class MPETokenizer:
         n_special = 4
         n_structural = 4
         n_duration = len(self.duration_grid)
+        n_type = len(TYPE_LABELS)
         n_root = TET_53
         n_pitch = self.max_pitch - self.pitch_offset + 1
         n_pv = n_pitch * self.num_vel_bins
@@ -884,6 +1070,7 @@ class MPETokenizer:
         print(f"  Special tokens:     {n_special}  (IDs 0-{n_special-1})")
         print(f"  Structural tokens:  {n_structural}  ({CHORD_START_TOKEN}, {CHORD_END_TOKEN}, {BAR_TOKEN}, {REST_TOKEN})")
         print(f"  Duration tokens:    {n_duration}  (DUR_{self.duration_grid[0]} .. DUR_{self.duration_grid[-1]})")
+        print(f"  Type tokens:        {n_type}  ({TYPE_TOKENS[0]} .. {TYPE_TOKENS[-1]})")
         print(f"  Root tokens:        {n_root}  (ROOT_0 .. ROOT_52)")
         print(f"  PV tokens:          {n_pv}  (PV_{self.pitch_offset}_1 .. PV_{self.max_pitch}_{self.num_vel_bins})")
         print(f"  Beats per bar:      {self.beats_per_bar}")

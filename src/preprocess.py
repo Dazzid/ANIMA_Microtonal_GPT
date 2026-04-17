@@ -66,6 +66,9 @@ from eigenspace import (
 from tokenizer import (
     MPETokenizer, parse_mpe_midi, clean_chords,
     CHORD_START_TOKEN, CHORD_END_TOKEN,
+    TYPE_PREFIX, TYPE_LABELS,
+    STYLE_PREFIX, STYLE_LABELS,
+    _extract_type_label,
 )
 
 # Lazy torch
@@ -153,6 +156,18 @@ def _build_chord_spans(token_strs: List[str]) -> List[int]:
 
 
 # =============================================================================
+# TYPE LABEL EXTRACTION
+# =============================================================================
+
+def extract_type_label(midi_path: str) -> Optional[str]:
+    """
+    Extract the transformation type label from a MIDI file path.
+    Delegates to tokenizer._extract_type_label.
+    """
+    return _extract_type_label(midi_path)
+
+
+# =============================================================================
 # SINGLE-SONG PREPROCESSING
 # =============================================================================
 
@@ -160,6 +175,8 @@ def preprocess_song(
     midi_path: str,
     tokenizer: Optional[MPETokenizer] = None,
     speed: float = 1.0,
+    type_label: Optional[str] = None,
+    style_label: Optional[str] = None,
     **_kwargs,
 ) -> Optional[Dict]:
     """
@@ -167,15 +184,18 @@ def preprocess_song(
     
     Pipeline:
       1. Parse MIDI → chord events (onset, duration, notes)
-      2. Tokenize → flat token_ids (MIDI channel)
-      3. For each chord: compute EigenSpace 4D (spatial channel)
-      4. Build chord_spans (token position → chord index)
-      5. Return aligned dict
+      2. Extract type label from path (if not provided)
+      3. Tokenize → flat token_ids with TYPE + STYLE conditioning (MIDI channel)
+      4. For each chord: compute EigenSpace 4D (spatial channel)
+      5. Build chord_spans (token position → chord index)
+      6. Return aligned dict
     
     Args:
         midi_path: Path to 53-TET MPE MIDI file
         tokenizer: MPETokenizer instance (creates default if None)
         speed: Playback speed multiplier
+        type_label: Transformation type (e.g. "0_major"). Auto-detected if None.
+        style_label: Musical style (e.g. "jazz", "blues"). None = no STYLE token.
         
     Returns:
         Dict with all channels aligned, or None on failure
@@ -191,17 +211,23 @@ def preprocess_song(
         return None
     chords = clean_chords(chords)
     
-    # Step 2: Tokenize (MIDI channel)
-    token_strs = tokenizer.encode_chords(chords, add_start_end=True)
+    # Step 2: Extract type label from path if not provided
+    if type_label is None:
+        type_label = extract_type_label(str(midi_path))
+    
+    # Step 3: Tokenize (MIDI channel) — with TYPE + STYLE conditioning tokens
+    token_strs = tokenizer.encode_chords(chords, add_start_end=True,
+                                          type_label=type_label,
+                                          style_label=style_label)
     token_ids = tokenizer.encode_to_ids(token_strs)
     
-    # Step 3: EigenSpace 4D per chord — (α, β, γ, δ) position in harmonic space
+    # Step 4: EigenSpace 4D per chord — (α, β, γ, δ) position in harmonic space
     eigenspace_4d = []
     for chord in chords:
         vec = _chord_to_eigenspace(chord)
         eigenspace_4d.append(vec)
     
-    # Step 4: Chord-span index
+    # Step 5: Chord-span index
     chord_spans = _build_chord_spans(token_strs)
     
     # Validation: n_chords should match
@@ -214,6 +240,8 @@ def preprocess_song(
     
     return {
         'file': midi_path.name,
+        'type_label': type_label,
+        'style_label': style_label,
         'token_ids': token_ids,
         'token_strs': token_strs,
         'eigenspace_4d': eigenspace_4d,
@@ -332,6 +360,9 @@ def preprocess_dataset(
     """
     Batch pre-process all MIDI files into dual-channel training data.
     
+    Walks subdirectories matching type_* pattern to extract transformation
+    type labels, or processes flat directories with type auto-detection.
+    
     Saves:
       <output_dir>/vocab.json              — tokenizer vocabulary
       <output_dir>/eigenspace_stats.json   — EigenSpace distribution statistics
@@ -339,7 +370,7 @@ def preprocess_dataset(
       <output_dir>/songs/*.json            — per-song dual-channel data
     
     Args:
-        midi_dir: Directory containing 53-TET MPE MIDI files
+        midi_dir: Directory containing 53-TET MPE MIDI files (with type_* subdirs)
         output_dir: Output directory
         tokenizer: MPETokenizer (creates default if None)
         max_files: Limit number of files (None = all)
@@ -356,13 +387,30 @@ def preprocess_dataset(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Collect MIDI files
-    files = sorted(midi_dir.glob("*.mid"))
+    # Collect MIDI files — walk type_* subdirectories if they exist
+    files = []
+    type_subdirs = sorted([d for d in midi_dir.iterdir() 
+                           if d.is_dir() and d.name.startswith("type_")])
+    
+    if type_subdirs:
+        # Structured dataset with type subdirectories
+        for subdir in type_subdirs:
+            subfiles = sorted(subdir.glob("*.mid"))
+            files.extend(subfiles)
+        if verbose:
+            print(f"Found {len(type_subdirs)} type subdirectories:")
+            for sd in type_subdirs:
+                n = len(list(sd.glob("*.mid")))
+                print(f"  {sd.name}: {n:,} files")
+    else:
+        # Flat directory — type will be extracted from filename
+        files = sorted(midi_dir.glob("*.mid"))
+    
     if max_files:
         files = files[:max_files]
     
     if verbose:
-        print(f"Pre-processing {len(files)} files from {midi_dir}/")
+        print(f"Pre-processing {len(files):,} files from {midi_dir}/")
     
     # Process each file
     results = []
@@ -370,6 +418,7 @@ def preprocess_dataset(
     all_eigenspace = []   # collect all chord vectors for global stats
     total_chords = 0
     total_tokens = 0
+    type_counts = {}  # track count per type
     
     for i, f in enumerate(files):
         try:
@@ -379,6 +428,7 @@ def preprocess_dataset(
             if result:
                 compact = {
                     'file': result['file'],
+                    'type_label': result.get('type_label'),
                     'token_ids': result['token_ids'],
                     'eigenspace_4d': result['eigenspace_4d'],
                     'chord_spans': result['chord_spans'],
@@ -389,6 +439,9 @@ def preprocess_dataset(
                 all_eigenspace.extend(result['eigenspace_4d'])
                 total_chords += result['n_chords']
                 total_tokens += result['n_tokens']
+                # Track type distribution
+                tl = result.get('type_label', 'unknown')
+                type_counts[tl] = type_counts.get(tl, 0) + 1
             else:
                 failed += 1
         except Exception as e:
@@ -431,6 +484,7 @@ def preprocess_dataset(
         'avg_tokens_per_song': round(total_tokens / max(1, len(results)), 1),
         'avg_chords_per_song': round(total_chords / max(1, len(results)), 1),
         'eigenspace_stats': eigen_stats,
+        'type_distribution': type_counts,
     }
     
     # Save outputs
@@ -473,6 +527,10 @@ def preprocess_dataset(
             print(f"    β: {eigen_stats['beta_mean']:.4f} ± {eigen_stats['beta_std']:.4f}")
             print(f"    γ: {eigen_stats['gamma_mean']:.4f} ± {eigen_stats['gamma_std']:.4f}")
             print(f"    δ: {eigen_stats['delta_mean']:.4f} ± {eigen_stats['delta_std']:.4f}")
+        if type_counts:
+            print(f"\n  Type distribution:")
+            for tl, count in sorted(type_counts.items()):
+                print(f"    {tl}: {count:,}")
     
     return dataset_stats
 

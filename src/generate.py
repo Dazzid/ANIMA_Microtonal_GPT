@@ -72,25 +72,67 @@ from eigenspace import EigenSpaceComputer
 
 
 # =============================================================================
-# Import model architecture from training script
+# EigenSpace Prior — empirical distribution from training data
 # =============================================================================
 
-# We import the classes directly from train to guarantee
-# architecture parity with the checkpoint.
-from importlib import util as _importlib_util
+class EigenSpacePrior:
+    """
+    Collects eigenspace vectors at CHORD_START positions from training data.
+    
+    During generation, samples from this empirical distribution to provide
+    the model with realistic eigenspace conditioning at CHORD_START — 
+    matching what it saw during training (where eigenspace was precomputed
+    with full lookahead over completed chords).
+    """
 
-def _import_training_module():
-    """Import train.py as a module."""
-    spec = _importlib_util.spec_from_file_location(
-        "train", _SRC_DIR / "train.py"
-    )
-    mod = _importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    def __init__(self, tokenized_dir: str, max_seqs: int = 2000):
+        tokenized_dir = Path(tokenized_dir)
+        
+        with open(tokenized_dir / 'meta.json') as f:
+            meta = json.load(f)
+        with open(tokenized_dir / 'vocab.json') as f:
+            vocab_data = json.load(f)
 
-_train_mod = _import_training_module()
-ModelConfig = _train_mod.ModelConfig
-GPT2 = _train_mod.GPT2
+        seq_len = meta['seq_len']
+        n_seqs = meta['n_train_seqs']
+        cs_id = vocab_data['token_to_id']['CHORD_START']
+
+        # Memory-map training data
+        tokens = np.memmap(
+            tokenized_dir / 'train_tokens.bin', dtype=np.uint16, mode='r'
+        ).reshape(n_seqs, seq_len)
+        eigen = np.memmap(
+            tokenized_dir / 'train_eigen.bin', dtype=np.float16, mode='r'
+        ).reshape(n_seqs, seq_len, 4)
+
+        # Collect eigenspace at every CHORD_START in a random sample of sequences
+        sample_n = min(max_seqs, n_seqs)
+        rng = np.random.default_rng(0)
+        sample_idx = rng.choice(n_seqs, sample_n, replace=False)
+
+        chunks = []
+        for si in sample_idx:
+            mask = tokens[si] == cs_id
+            if mask.any():
+                chunks.append(eigen[si][mask].astype(np.float32))
+
+        self.vectors = np.concatenate(chunks, axis=0)  # (N, 4)
+        self._rng = np.random.default_rng()
+
+    def sample(self) -> np.ndarray:
+        """Sample one random eigenspace vector from the training distribution."""
+        idx = self._rng.integers(0, len(self.vectors))
+        return self.vectors[idx].copy()  # (4,)
+
+    def __len__(self):
+        return len(self.vectors)
+
+
+# =============================================================================
+# Import model architecture
+# =============================================================================
+
+from model import ModelConfig, GPT2
 
 
 # =============================================================================
@@ -147,14 +189,17 @@ def generate_with_eigenspace(
     device: torch.device = torch.device('cpu'),
     stop_at_end: bool = True,
     recompute_interval: str = 'chord',
+    eigen_prior: Optional[EigenSpacePrior] = None,
 ) -> Tuple[List[int], List[str]]:
     """
     Autoregressive generation with live EigenSpace recomputation.
 
-    Instead of using static default eigenspace for generated tokens,
-    this function recomputes (α, β, γ, D) whenever a new chord is
-    completed (CHORD_END emitted), feeding the true harmonic coordinates
-    back into the model for subsequent tokens.
+    The model was trained with lookahead eigenspace: every token inside
+    a chord (including CHORD_START) had that chord's precomputed (α,β,γ,δ).
+    During autoregressive generation we don't have lookahead, so we use an
+    EigenSpacePrior — an empirical distribution collected from training data —
+    to sample realistic eigenspace at CHORD_START, then recompute from the
+    actual notes after CHORD_END.
 
     Args:
         model:              Trained GPT2 model (eval mode)
@@ -167,9 +212,10 @@ def generate_with_eigenspace(
         top_p:              Nucleus sampling (None = disabled)
         device:             Torch device
         stop_at_end:        Stop generation when <end> is produced
-        recompute_interval: 'chord' (recompute after each chord) or
-                            'bar' (recompute after each bar) or
-                            'none' (use defaults like the basic generate)
+        recompute_interval: 'chord' (normal) or 'bar' or 'none'
+        eigen_prior:        EigenSpacePrior for sampling at CHORD_START.
+                            If None, falls back to inheriting last eigen
+                            (will produce repetitive output).
 
     Returns:
         (token_ids, token_strings) — full sequence including prompt
@@ -244,29 +290,34 @@ def generate_with_eigenspace(
             eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
 
         elif recompute_interval == 'chord':
-            # Recompute full eigenspace only when a chord is complete.
-            # During training, every token in a chord has that chord's
-            # FULL eigenspace.  We can't know the chord identity until
-            # CHORD_END, so we carry forward the last known eigenspace
-            # for in-progress chords and recompute at CHORD_END — the
-            # next forward pass then sees correct eigen for all completed
-            # chords.
-            if next_token == 'CHORD_END':
-                # Chord just finished — recompute the whole sequence
+            # Training data has LOOKAHEAD eigenspace: every token in a chord
+            # (including CHORD_START itself) carries the full chord's eigen.
+            # Since we can't lookahead during generation, we:
+            #   1. At CHORD_START: sample from the training-data prior
+            #   2. Within the chord: inherit that sampled eigenspace
+            #   3. At CHORD_END: recompute from the actual generated notes
+            #      and retroactively fix all tokens in this chord
+            #   4. At BAR/structural: use defaults (matches training)
+            if next_token == 'CHORD_START':
+                if eigen_prior is not None:
+                    sampled = eigen_prior.sample().reshape(1, 4)
+                    eigen_array = np.concatenate([eigen_array, sampled], axis=0)
+                else:
+                    # No prior — fall back to default (will produce repetitive output)
+                    eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
+            elif next_token == 'CHORD_END':
+                # Chord complete — recompute true eigenspace for the whole
+                # sequence so this chord's tokens get their real values
                 eigen_array = eigen_computer.compute_for_tokens(all_tokens_str)
-            elif next_token in ('BAR', 'REST', '<start>', '<end>', '<sep>'):
-                # Non-chord tokens get defaults (matching training)
+            elif next_token in ('BAR', 'REST', '<start>', '<end>', '<sep>') or next_token.startswith('TYPE_') or next_token.startswith('STYLE_') or next_token.startswith('BAR_'):
+                # Structural/conditioning tokens get defaults (matching training)
                 eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
             else:
-                # Inside an in-progress chord — inherit last eigenspace
-                if len(eigen_array) > 0:
-                    eigen_array = np.concatenate(
-                        [eigen_array, eigen_array[[-1]]], axis=0
-                    )
-                else:
-                    eigen_array = np.concatenate(
-                        [eigen_array, _DEFAULT_EIGEN], axis=0
-                    )
+                # DUR, ROOT, PV tokens inside a chord — inherit the
+                # eigenspace from CHORD_START (the sampled prior)
+                eigen_array = np.concatenate(
+                    [eigen_array, eigen_array[[-1]]], axis=0
+                )
 
         elif recompute_interval == 'bar':
             if next_token in ('BAR', 'CHORD_END'):
@@ -322,8 +373,10 @@ def format_sequence(tokens: List[str], color: bool = True) -> str:
             parts.append(f"{BOLD}{RED}{tok}{RESET}")
         elif tok in ('CHORD_START', 'CHORD_END'):
             parts.append(f"{YELLOW}{tok}{RESET}")
-        elif tok in ('BAR', 'REST'):
+        elif tok in ('BAR', 'REST') or tok.startswith('BAR_'):
             parts.append(f"{BOLD}{CYAN}{tok}{RESET}")
+        elif tok.startswith('TYPE_') or tok.startswith('STYLE_'):
+            parts.append(f"{BOLD}{MAGENTA}{tok}{RESET}")
         elif tok.startswith('PV_'):
             parts.append(f"{GREEN}{tok}{RESET}")
         elif tok.startswith('ROOT_'):
@@ -360,11 +413,12 @@ def format_as_readable(tokens: List[str]) -> str:
                 lines.append(current_line)
                 current_line = ""
             lines.append("── END ──")
-        elif tok == 'BAR':
+        elif tok == 'BAR' or tok.startswith('BAR_'):
             if current_line:
                 lines.append(current_line)
                 current_line = ""
-            lines.append("  |")
+            bar_label = tok.replace('BAR_', 'Bar ') if tok.startswith('BAR_') else '|'
+            lines.append(f"  {bar_label}")
         elif tok == 'CHORD_START':
             steps = []
             root = None
@@ -416,7 +470,7 @@ def extract_chords_summary(tokens: List[str]) -> List[dict]:
     while i < len(tokens):
         tok = tokens[i]
 
-        if tok == 'BAR':
+        if tok == 'BAR' or tok.startswith('BAR_'):
             bar_num += 1
         elif tok == 'CHORD_START':
             chord = {
@@ -630,6 +684,23 @@ Examples:
     parser.add_argument("--prompt", type=str, default=None,
                         help='Prompt tokens (space-separated, e.g. "<start> BAR")')
 
+    # Conditioning — control what the model generates
+    parser.add_argument("--type", type=str, default=None,
+                        help='Transformation type (e.g. "0_major", "2_subminor"). '
+                             'Available: ' + ', '.join([
+                                 "0_major", "0_minor", "1_minor", "1_neutral",
+                                 "2_minor", "2_subminor", "3_major", "3_minor",
+                                 "4_minor", "4_upmajor", "5_major_v2", "5_minor",
+                                 "6_minor", "6_neutral_n"]))
+    parser.add_argument("--style", type=str, default=None,
+                        help='Style conditioning (e.g. "jazz", "bossa_samba", "ballad"). '
+                             'Available: jazz, bossa_samba, ballad, pop, rock, waltz, '
+                             'funk_soul, latin, blues, folk_country')
+    parser.add_argument("--first-chord", type=str, default=None,
+                        help='First chord tokens to seed generation with '
+                             '(e.g. "CHORD_START DUR_4.0 ROOT_0 PV_212_6 PV_243_4 '
+                             'PV_265_5 PV_283_5 PV_318_4 CHORD_END")')
+
     # EigenSpace
     parser.add_argument("--eigen-mode", type=str, default="chord",
                         choices=["chord", "bar", "none"],
@@ -683,6 +754,12 @@ Examples:
     eigen_computer = EigenSpaceComputer(normalize_diss=True)
     print("  EigenSpace ready")
 
+    # ── EigenSpace prior (training distribution) ──
+    tokenized_dir = str(Path(args.vocab).parent)
+    print("Loading EigenSpace prior from training data...")
+    eigen_prior = EigenSpacePrior(tokenized_dir)
+    print(f"  Prior: {len(eigen_prior)} chord eigenspace vectors collected")
+
     # ── Build prompt ──
     if args.prompt:
         prompt_tokens = args.prompt.strip().split()
@@ -691,14 +768,49 @@ Examples:
         if unknown:
             print(f"\n[WARNING] Unknown tokens in prompt: {unknown}")
             print(f"  Available special tokens: <start>, <end>, <sep>, BAR, REST,")
-            print(f"  CHORD_START, CHORD_END, DUR_0.5..DUR_16.0, P_106..P_424, V_1..V_8")
+            print(f"  CHORD_START, CHORD_END, DUR_0.5..DUR_16.0, ROOT_0..ROOT_52,")
+            print(f"  TYPE_0_major..TYPE_6_neutral_n, PV_106_1..PV_424_8")
             prompt_tokens = [t for t in prompt_tokens if t in vocab.token_to_id]
-
         prompt_ids = vocab.encode(prompt_tokens)
     else:
-        # Default: start with <start>
+        # Build prompt from conditioning args: <start> [TYPE_...] [first chord...]
         prompt_tokens = ['<start>']
-        prompt_ids = [vocab.start_id]
+        
+        # Type conditioning
+        if args.type:
+            type_token = f'TYPE_{args.type}'
+            if type_token in vocab.token_to_id:
+                prompt_tokens.append(type_token)
+                print(f"  Type conditioning: {type_token}")
+            else:
+                print(f"  [WARNING] Unknown type '{args.type}'. Available types:")
+                type_tokens = [t for t in vocab.token_to_id if t.startswith('TYPE_')]
+                for tt in sorted(type_tokens):
+                    print(f"    {tt}")
+        
+        # Style conditioning
+        if args.style:
+            style_token = f'STYLE_{args.style}'
+            if style_token in vocab.token_to_id:
+                prompt_tokens.append(style_token)
+                print(f"  Style conditioning: {style_token}")
+            else:
+                print(f"  [WARNING] Unknown style '{args.style}'. Available styles:")
+                style_tokens = [t for t in vocab.token_to_id if t.startswith('STYLE_')]
+                for st in sorted(style_tokens):
+                    print(f"    {st}")
+
+        # First chord conditioning
+        if args.first_chord:
+            chord_tokens = args.first_chord.strip().split()
+            unknown = [t for t in chord_tokens if t not in vocab.token_to_id]
+            if unknown:
+                print(f"  [WARNING] Unknown chord tokens: {unknown}")
+                chord_tokens = [t for t in chord_tokens if t in vocab.token_to_id]
+            prompt_tokens.extend(chord_tokens)
+            print(f"  First chord: {' '.join(chord_tokens)}")
+        
+        prompt_ids = vocab.encode(prompt_tokens)
 
     print(f"\nPrompt ({len(prompt_ids)} tokens): {' '.join(prompt_tokens)}")
 
@@ -773,6 +885,7 @@ Examples:
                 top_p=top_p,
                 device=device,
                 recompute_interval=args.eigen_mode,
+                eigen_prior=eigen_prior,
             )
             dt = time.time() - t0
 
@@ -811,6 +924,7 @@ Examples:
             top_p=args.top_p,
             device=device,
             recompute_interval=args.eigen_mode,
+            eigen_prior=eigen_prior,
         )
         dt = time.time() - t0
         new_tokens = len(gen_ids) - len(prompt_ids)
