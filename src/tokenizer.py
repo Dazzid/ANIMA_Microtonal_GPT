@@ -119,11 +119,11 @@ REST_TOKEN = "REST"
 # ROOT_0 = C (approx), ROOT_9 = D (approx), etc.
 ROOT_PREFIX = "ROOT"
 
-# Bar number tokens: BAR_1 … BAR_64 replace the anonymous BAR token.
-# Positional — the model learns "this is bar 5 of a 12-bar blues", etc.
-# 64 covers all practical song lengths (most jazz standards ≤ 32 bars).
-BAR_MAX = 64
-BAR_NUMBER_TOKENS = [f"BAR_{n}" for n in range(1, BAR_MAX + 1)]
+# BAR token is structural-only (no numbering). Musicians think in sections
+# (Form_A, Form_B) and beats, not absolute bar indices. FORM_* + BAR + |:
+# + :| carry all the structural signal the model needs; EigenSpace carries
+# harmonic position. Absolute BAR_<n> would fight generalization across
+# repeated sections (A-section bar 1 vs bar 9 should feel the same).
 
 # Type conditioning tokens: encode the 53-TET transformation type
 # These are prepended at the START of each sequence (before <start>)
@@ -148,21 +148,30 @@ TYPE_LABELS = [
 ]
 TYPE_TOKENS = [f"{TYPE_PREFIX}_{label}" for label in TYPE_LABELS]
 
-# Style conditioning tokens: encode the musical genre/style of the source song
+# Style conditioning tokens: encode the musical genre/style of the source song.
 # These are prepended after the TYPE token at the START of each sequence.
-# Raw iReal Pro styles (131 unique values) are grouped into 10 canonical categories.
+# Raw iReal Pro styles (131+ unique values) are normalized to the canonical
+# buckets defined in formats.correctStyleTokens(). Diversity is preserved
+# (~16 buckets, NOT collapsed into 4) — musicians distinguish Bossa from Samba
+# from Jazz from Soul, and the model should too.
 STYLE_PREFIX = "STYLE"
 STYLE_LABELS = [
-    "jazz",
-    "bossa_samba",
-    "ballad",
-    "pop",
-    "rock",
-    "waltz",
-    "funk_soul",
-    "latin",
-    "blues",
-    "folk_country",
+    "Jazz",
+    "Blues",
+    "Folk",
+    "Bossa",
+    "Reggae",
+    "Samba",
+    "Funk",
+    "Pop",
+    "Son",
+    "Rock",
+    "Soul",
+    "Balad",
+    "RnB",
+    "Gospel",
+    "Afox\u00e9",
+    "Even 8ths",
 ]
 STYLE_TOKENS = [f"{STYLE_PREFIX}_{label}" for label in STYLE_LABELS]
 
@@ -208,74 +217,74 @@ def classify_form(raw_form):
     return None
 
 
-# Mapping from raw iReal Pro style strings to canonical STYLE labels
-_RAW_STYLE_TO_GROUP = None
-
-def _build_style_map():
-    """Build the raw-style → canonical-group mapping (lazy, cached)."""
-    global _RAW_STYLE_TO_GROUP
-    if _RAW_STYLE_TO_GROUP is not None:
-        return _RAW_STYLE_TO_GROUP
-
-    import re as _re
-    _RAW_STYLE_TO_GROUP = {}
-
-    # Keywords-based classification (order matters: first match wins)
-    # Mirrors formats.py logic: anything containing "rock" → rock (dominant).
-    # Band names (Beatles, Rolling Stones) also → rock.
-    _rules = [
-        # Rock FIRST — any style containing "rock" is rock (matches formats.py behavior)
-        # Also catches band names: Beatles, Rolling Stones, etc.
-        (r'rock|reggae|beatles|rolling.?stones', 'rock'),
-        # Ballad (after rock, so "Rock Ballad" → rock, but "Pop Ballad" → ballad)
-        (r'ballad', 'ballad'),
-        # Samba / Bossa (after rock, so "Samba-Rock" → rock)
-        (r'samba|bossa|choro|marchinha|maxixe|frevo|forr|bai[aã]o|afox[eé]|afro', 'bossa_samba'),
-        # Blues / Shuffle (after rock, so "Blues Rock" → rock)
-        (r'blues|shuffle', 'blues'),
-        # Waltz (after rock, so "Rock Waltz" → rock)
-        (r'waltz', 'waltz'),
-        # Jazz / Swing (broad — catches "medium swing", "up tempo swing", etc.)
-        (r'swing|jazz|fusion|even.?8|even.?16|moderately|deliberately|medium\s*slow|slowly|128\s*feel|medium\s*up$|up\s*tempo$|dreamlike', 'jazz'),
-        # Pop
-        (r'pop|disco|electro|musical', 'pop'),
-        # Funk / Soul / R&B
-        (r'funk|soul|r.?n.?b', 'funk_soul'),
-        # Latin (bolero, tango, son, salsa, etc.)
-        (r'latin|bolero|tango|son$|salsa|montuno|mambo|cha\s*cha|merengue|calypso|chacarera|cuban', 'latin'),
-        # Folk / Country / Worship
-        (r'folk|country|hymn|worship|gospel|march$', 'folk_country'),
-    ]
-
-    # We'll populate lazily when first called with actual style strings
-    _RAW_STYLE_TO_GROUP['__rules__'] = _rules
-    return _RAW_STYLE_TO_GROUP
-
-
 def classify_style(raw_style):
     """
     Map a raw iReal Pro style string to a canonical STYLE label.
+
+    Mirrors the canonical mapping in ``formats.correctStyleTokensInMeta`` /
+    ``formats.correctStyleTokens`` so tokenization and preprocessing agree.
+    Preserves stylistic diversity (~16 buckets) rather than collapsing into
+    broad categories.
 
     Args:
         raw_style (str): e.g. "Medium Swing", "Bossa Nova", "Rock Pop"
 
     Returns:
-        str: Canonical label from STYLE_LABELS, or None if empty/unknown
+        str: Canonical label from STYLE_LABELS, or None if empty.
     """
     if not raw_style or not raw_style.strip():
         return None
 
-    import re as _re
-    style_map = _build_style_map()
-    rules = style_map['__rules__']
-    sl = raw_style.strip().lower()
+    el = raw_style.strip()
 
-    for pattern, group in rules:
-        if _re.search(pattern, sl):
-            return group
+    # Exact-match aliases (formats.py rules)
+    if el == 'Moderately':
+        return 'Pop'
+    if el in ("Even 8th's", "Even 8's"):
+        return 'Even 8ths'
+    if el == "R'n'B":
+        return 'RnB'
+    if el == 'Beatles':
+        return 'Rock'
+    if el == 'Afoxe':
+        return 'Afox\u00e9'
+    if el in ('Worship', 'Traditional Gospel'):
+        return 'Gospel'
+    if el == 'Deliberately':
+        return 'Pop'
 
-    # Fallback: if nothing matched, use 'jazz' (dominant class)
-    return 'jazz'
+    # Substring rules (order matches formats.py; later matches override earlier)
+    result = None
+    if 'Swing' in el:
+        result = 'Jazz'
+    if 'Blues' in el:
+        result = 'Blues'
+    if 'Folk' in el:
+        result = 'Folk'
+    if 'Fusion' in el:
+        result = 'Jazz'
+    if 'Jazz' in el:
+        result = 'Jazz'
+    if 'Bossa' in el:
+        result = 'Bossa'
+    if 'Reggae' in el:
+        result = 'Reggae'
+    if 'Samba' in el:
+        result = 'Samba'
+    if 'Funk' in el:
+        result = 'Funk'
+    if 'Pop' in el:
+        result = 'Pop'
+    if 'Son' in el:
+        result = 'Son'
+    if 'Rock' in el:
+        result = 'Rock'
+    if 'Soul' in el:
+        result = 'Soul'
+    if 'Balad' in el:
+        result = 'Balad'
+
+    return result  # may be None if nothing matched — caller decides fallback
 
 
 # =============================================================================
@@ -671,12 +680,8 @@ class MPETokenizer:
         # 1. Special tokens (IDs 0-3)
         tokens.extend([PAD_TOKEN, START_TOKEN, END_TOKEN, SEP_TOKEN])
         
-        # 2. Structural tokens
+        # 2. Structural tokens (BAR is a plain structural marker — no numbering)
         tokens.extend([CHORD_START_TOKEN, CHORD_END_TOKEN, BAR_TOKEN, REST_TOKEN])
-
-        # 2a. Bar number tokens: BAR_1 … BAR_64
-        #     Replace anonymous BAR — model learns position within song form
-        tokens.extend(BAR_NUMBER_TOKENS)
         
         # 3. Duration tokens: DUR_<value>
         for dur in self.duration_grid:
@@ -782,21 +787,17 @@ class MPETokenizer:
         last_bar = -1  # Track bar lines (0-indexed)
 
         for i, chord in enumerate(chords):
-            # Insert BAR_N token at bar boundaries (with optional FORM_X before it)
+            # Insert BAR token at bar boundaries (with optional FORM_X before it)
             current_bar = int(chord['onset_beats'] // self.beats_per_bar)  # 0-indexed
             if current_bar > last_bar:
                 bars_to_emit = current_bar - max(0, last_bar)
                 for b in range(bars_to_emit):
                     if last_bar >= 0:  # Don't add BAR before the first chord
-                        bar_number = last_bar + b + 1 + 1  # 1-indexed
-                        # FORM_ marker for the bar we are entering (0-indexed = bar_number - 1)
-                        bar_0idx = bar_number - 1
+                        bar_0idx = last_bar + b + 1
+                        # FORM_ marker for the bar we are entering
                         if bar_0idx in form_lookup:
                             tokens.append(form_lookup[bar_0idx])
-                        if bar_number <= BAR_MAX:
-                            tokens.append(f"BAR_{bar_number}")
-                        else:
-                            tokens.append(BAR_TOKEN)
+                        tokens.append(BAR_TOKEN)
                 last_bar = current_bar
 
             # Chord start

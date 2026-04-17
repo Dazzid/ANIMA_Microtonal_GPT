@@ -1,269 +1,625 @@
-# ANIMA v3 — Strategy: Chord-as-Column Architecture
+# ANIMA Microtonal GPT — Strategy V3
 
-## The Problem
+Single source of truth for the current phase.
+Contains: the goal, the data contract, the tokenization spec, the model-input
+plan, the log of decisions and past failures, and the road to follow.
+This document also serves as the paper outline.
 
-We want to train a GPT-2 that interprets data as MIDI chords. The data is
-inherently 2D: a piano roll matrix (time × pitch) with MPE content in each
-active cell (velocity, microtonal pitch bend). GPT-2 consumes 1D sequences.
+---
 
-Previous approaches serialized the chord into flat tokens:
-`CHORD_START DUR_8.0 P_212 V_6 P_243 V_4 P_265 V_5 CHORD_END`
+## 1. Mission
 
-This is BS because:
-1. P_212 is a meaningless label. The number 212 carries zero musical
-   information to the embedding layer.
-2. Simultaneous notes are serialized into sequential predictions. The model
-   predicts P_243 AFTER P_212 as if it's the next event. It's not — it's
-   the same event.
-3. CHORD_START/CHORD_END are decorative. They don't enforce any structural
-   understanding.
-4. EigenSpace is computed from the complete chord, but the model builds the
-   chord token by token. Chicken and egg.
+Train a GPT that generates **harmonic chord progressions in 53-TET
+microtonality** with learned voicings, conditioned on:
 
-## The Data (measured, not assumed)
+- Transformation **Type** (14 classes, from folder name)
+- **Style** (16 canonical buckets)
+- **Form** (A/B/C/D, intro, head, coda, segno; with `|:` `:|` repeats)
+- **Tonality** (key)
+- **Time** (per-chord duration + plain `BAR` marker)
 
-From the 53-TET MPE dataset:
-- **Notes per chord**: 4-6 (mean 4.9, 76% have exactly 5)
-- **53-TET pitch range**: step 164 to 336 (173 positions, ~3.3 octaves)
-- **Velocities**: 55 to 84 (MIDI 0-127 range, narrow in this dataset)
-- **Durations**: {2.0, 4.0, 8.0} beats (dominant); some outliers up to 224
-- **Chords per song**: ~54
-- **Songs in dataset**: ~13,000 (train + val)
+Two models will be compared:
 
-## Data Example: "Preciso Me Encontrar" (C minor, major type)
+- **Model A — Hybrid Symbolic (L1) + MIDI/MPE (L2)** — this phase
+- **Model B — Hybrid Symbolic (L1) + full 53-TET holdrian column (L2)** — next phase
 
-### The Raw MIDI Data (what we have)
+A is trained first. When A converges, B is trained on the same L1 with a
+different L2 and the two are compared on identical prompts.
+
+---
+
+## 2. Dataset (built, verified)
+
+Parallel twin-tree, 1:1 mirror:
 
 ```
---- Chord 0 --- onset: 0.0 beats   duration: 8.0 beats
-  note 0: step_53=212  (oct=4, pos= 0)  vel= 83  freq= 130.39 Hz  (~C3)
-  note 1: step_53=243  (oct=4, pos=31)  vel= 61  freq= 195.57 Hz  (~G3)
-  note 2: step_53=265  (oct=5, pos= 0)  vel= 70  freq= 260.77 Hz  (~C4)
-  note 3: step_53=283  (oct=5, pos=18)  vel= 71  freq= 329.99 Hz  (~E4)
-  note 4: step_53=318  (oct=6, pos= 0)  vel= 59  freq= 521.54 Hz  (~C5)
-  intervals from root: [0, 31, 53, 71, 106]
-  freq ratios from root: [1.4999  2.0000  2.5309  4.0000]
-
---- Chord 1 --- onset: 8.0 beats   duration: 8.0 beats
-  note 0: step_53=199  (oct=3, pos=40)  vel= 82  freq= 110.00 Hz  (~A2)
-  note 1: step_53=252  (oct=4, pos=40)  vel= 77  freq= 220.00 Hz  (~A3)
-  note 2: step_53=283  (oct=5, pos=18)  vel= 78  freq= 329.99 Hz  (~E4)
-  note 3: step_53=287  (oct=5, pos=22)  vel= 63  freq= 347.71 Hz  (~F4)
-  note 4: step_53=318  (oct=6, pos= 0)  vel= 72  freq= 521.54 Hz  (~C5)
-  intervals from root: [0, 53, 84, 88, 119]
-  freq ratios from root: [2.0000  2.9999  3.1610  4.7413]
+dataset/midi_files/53_tet_mpe/<type_dir>/<stem>.mid
+dataset/text_files/53_tet_mpe/<type_dir>/<stem>.txt
 ```
 
-Each chord is a rich multidimensional event: 4-6 simultaneous notes, each
-with a precise 53-TET pitch (octave + position within octave), velocity,
-and frequency. The intervals and ratios define the harmonic identity.
+Verified counts (April 2026 build):
 
-### What the current tokenization produces (BS)
+- MIDI files: **672,840**
+- Text files: **672,840**
+- Type subdirs (14): `type_0_major`, `type_0_minor`, `type_1_minor`,
+  `type_1_neutral`, `type_2_minor`, `type_2_subminor`, `type_3_major`,
+  `type_3_minor`, `type_4_minor`, `type_4_upmajor`, `type_5_major_v2`,
+  `type_5_minor`, `type_6_minor`, `type_6_neutral_n`
+- Stem alignment between MIDI and TXT trees confirmed (empty `diff`)
 
+Text sidecar contains everything MIDI cannot express:
+`<style>`, style name, `<tonality>`, key, `Form_*`, `|:`, `:|`, `|`, and per
+chord `. <duration> <root> <quality> <extensions...> [/ <bass>]`.
+
+Example head of a sidecar:
 ```
-  [  0] <start>
-  [  1] CHORD_START        ← decorative delimiter
-  [  2] DUR_8.0
-  [  3] P_212              ← arbitrary label, no musical meaning to the model
-  [  4] V_6                ← quantized to 8 bins, velocity 83 → bin 6
-  [  5] P_243              ← model has no idea this is 31 steps above P_212
-  [  6] V_4
-  [  7] P_265              ← model has no idea this is an octave above P_212
-  [  8] V_5
-  [  9] P_283
-  [ 10] V_5
-  [ 11] P_318              ← model has no idea this is 2 octaves above P_212
-  [ 12] V_4
-  [ 13] CHORD_END          ← decorative delimiter
-  [ 14] BAR
-  [ 15] BAR
+<style> Latin Form_A |: . 4.0 C maj7 | . 4.0 A m7 | ...  :|
 ```
 
-5 simultaneous notes → 12 sequential tokens. The chord structure is
-destroyed. The pitch relationships are invisible. The model predicts P_243
-after P_212 as if it's the "next event" — it's not, it's the SAME event.
+Builder: `src/generate_53tet_dataset.py`.
 
-### What the column representation produces (v3)
+---
 
-```
-Column 0: duration=8.0 beats                        EigenSpace: (α, β, γ, D)
-  173 positions (step 164–336), 5 active:
-    [ 48] step=212 (oct=4, pos= 0)  vel=0.654       ← position in array = pitch
-    [ 79] step=243 (oct=4, pos=31)  vel=0.480       ← 31 cells away = fifth
-    [101] step=265 (oct=5, pos= 0)  vel=0.551       ← 53 cells away = octave
-    [119] step=283 (oct=5, pos=18)  vel=0.559
-    [154] step=318 (oct=6, pos= 0)  vel=0.465       ← 106 cells = 2 octaves
-  Density: 2.9%   (168 zeros, 5 active values)
+## 3. Approach: Option 2 — Hybrid L1 + L2
 
-Column 1: duration=8.0 beats                        EigenSpace: (α, β, γ, D)
-  173 positions, 5 active:
-    [ 35] step=199 (oct=3, pos=40)  vel=0.646
-    [ 88] step=252 (oct=4, pos=40)  vel=0.606
-    [119] step=283 (oct=5, pos=18)  vel=0.614
-    [123] step=287 (oct=5, pos=22)  vel=0.496
-    [154] step=318 (oct=6, pos= 0)  vel=0.567
-  Density: 2.9%
-```
-
-The chord is ONE vector. Position in the vector = pitch position in the
-53-TET grid. Adjacent cells = adjacent pitches. 53 cells apart = octave.
-The spatial relationship between notes is preserved in the geometry of the
-vector itself. Duration is a separate scalar. EigenSpace maps 1:1.
-
-The model reads Column 0 → Column 1 → Column 2 → ... and predicts the next
-column. Each column is one position in the transformer sequence.
-
-## The Strategy: Chord = Column = Position
-
-### Core Idea
-
-Each chord is a **column of the piano roll**. Each column is one position in
-the GPT-2 sequence. The model reads columns left to right and predicts the
-next column.
+Per chord, emit two aligned blocks in one stream:
 
 ```
-Song:  START → col_0 → col_1 → col_2 → ... → col_53 → END
-                 ↓        ↓        ↓                ↓
-Eigen:         (α,β,γ,D) (α,β,γ,D) (α,β,γ,D)    (α,β,γ,D)
+[ L1 symbolic tokens from .txt ]   [ L2 MIDI/MPE tokens from .mid ]
 ```
 
-### What is a Column?
+- **L1** = semantic label (what chord in what form in what style).
+- **L2** = voicing (which 53-TET pitches, durations, velocities).
+- **Alignment**: k-th chord block in the `.txt` ↔ k-th `CHORD_START…CHORD_END`
+  block in the `.mid`.
+- **Song-level L1 tokens** (type, style, tonality) appear once at the start.
+- **Structural L1 tokens** (`|`, `|:`, `:|`, `Form_*`) are emitted at their bar
+  boundaries between chord blocks.
+- **One vocabulary, one autoregressive loss, one head.** No dual decoder.
 
-A column is the MIDI data at one time position. It contains:
+### Why this layout
 
-1. **Pitch activation vector** — length 173 (the active range, step 164-336).
-   Each position holds the velocity (0.0 = inactive, normalized vel = active).
-   This is the piano roll slice. The topology is physical — adjacent cells
-   are adjacent pitches, 53 cells apart = one octave.
+- Voicings are the research target → MIDI/MPE must stay in the stream.
+- The previous 12-TET model had no form signal; text sidecars fix that.
+- Making every chord self-describing (symbol in L1, realization in L2)
+  lets the model learn `symbol → voicing` directly and generate either
+  from scratch or conditioned on a partial symbolic prompt.
 
-2. **Duration** — one scalar, normalized. Shared by all notes in the chord
-   (as in the current dataset — all notes in a chord have the same duration).
+### Worked example (2 chords)
 
-Total column vector: **174 dimensions** (173 pitch-velocity + 1 duration).
-
-### Input Projection
-
+Raw text sidecar fragment:
 ```
-column_vector (174) → Linear(174, n_embd) → chord_embedding (384)
-```
-
-One linear layer projects the full column into embedding space. The entire
-chord enters the transformer as ONE embedding vector at ONE position.
-
-### Positional Encoding: EigenSpace
-
-No sequential position (wpe). The EigenSpace (α, β, γ, D) computed from the
-chord IS the positional encoding:
-
-```
-eigenspace (4) → MLP(4 → 64 → 64 → 384) → positional_embedding (384)
+<style> Jazz <tonality> C_major TYPE_0_major Form_A |: . 4.0 C maj7 | . 4.0 A m7 :|
 ```
 
-The transformer input at each position:
+Matching MIDI has two chord blocks. Interleaved stream the model sees:
 ```
-x = chord_embedding + eigenspace_positional_embedding
+<start>
+STYLE_Jazz TONALITY_C_major TYPE_0_major FORM_A |:
+. 4.0 C maj7                                         ← L1 block 1
+CHORD_START DUR_4.0 P_212 V_3 P_243 V_3 P_265 V_2 P_284 V_3 P_306 V_2 CHORD_END   ← L2 block 1
+BAR
+. 4.0 A m7                                           ← L1 block 2
+CHORD_START DUR_4.0 P_209 V_3 P_240 V_3 P_262 V_2 P_281 V_3 P_303 V_2 CHORD_END   ← L2 block 2
+:|
+<end>
 ```
 
-### Output Head
+---
 
-The output head predicts the next column:
+## 4. Level 1 vocabulary (symbolic, from `.txt`)
+
+Canonical source: `src/formats.py`. Reuse `correctStyleTokensInMeta`,
+`getNotes`, `getNatures`, `listToIgnore`, `splitChordTokens`,
+`splitSlashChords`. Do not reinvent these tables.
+
+| Group        | Count | Examples                                                    | Source |
+|--------------|------:|-------------------------------------------------------------|--------|
+| Header       | 3     | `<style>`, `<tonality>`, `<type>`                           | literal |
+| Type         | 14    | `TYPE_0_major` … `TYPE_6_neutral_n`                         | folder name |
+| Style        | 16    | `Jazz Blues Folk Bossa Reggae Samba Funk Pop Son Rock Soul Balad RnB Gospel Afoxé "Even 8ths"` | `formats.correctStyleTokensInMeta` |
+| Tonality     | ~24   | `C_major`, `A_minor`, …                                     | sidecar |
+| Form         | 9     | `FORM_INTRO A B C D VERSE HEAD CODA SEGNO`                  | sidecar |
+| Structural   | 4     | `|`, `|:`, `:|`, `BAR`                                      | sidecar |
+| Chord start  | 1     | `.`                                                         | sidecar |
+| Duration (L1)| open  | float literal beats (`4.0`, `2.0`, `0.5`, …)                | sidecar |
+| Root letter  | 20    | from `getNotes()`                                           | sidecar |
+| Quality      | 18    | from `getNatures()` (`maj, maj7, m, m7, dom7, ø7, o7, sus, aug, …`) | sidecar |
+| Extensions   | open  | `b9`, `#11`, `add6`, …                                      | sidecar |
+| Slash bass   | 1+20  | `/` + root letter                                           | sidecar |
+
+Rules:
+- Style is chosen by the substring rules in `formats.correctStyleTokensInMeta`. **Diversity preserved (16 buckets, not collapsed to 4).**
+- Root in L1 is a **letter**, not a pitch class. 53-TET realization lives in L2.
+- `BAR` is a plain structural marker. **No numbering.**
+
+---
+
+## 5. Level 2 vocabulary (MIDI/MPE, from `.mid`)
+
+Extracted from `src/tokenizer.py` (current state, vocab_size = 2662):
+
+| Group       | Count | Values                                                        |
+|-------------|------:|---------------------------------------------------------------|
+| Special     | 4     | `<pad> <start> <end> <sep>`                                   |
+| Structural  | 4     | `CHORD_START`, `CHORD_END`, `BAR`, `REST`                     |
+| Duration    | 10    | `DUR_` ∈ {0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0} |
+| Pitch       | 319   | `P_106` … `P_424` (absolute 53-TET step; octave 2 … octave 8) |
+| Velocity    | 8     | `V_1` … `V_8`                                                 |
+
+Per-chord block:
+```
+CHORD_START  DUR_<d>  P_<step> V_<v>  P_<step> V_<v>  …  CHORD_END
+```
+Max 8 notes per chord (`MAX_CHORD_NOTES = 8`).
+
+Known stray to remove: `ROOT_<pc>` tokens. Root in L1 is the chord letter;
+L2 carries the 53-TET voicing. `ROOT_*` in the vocab is a leftover of an
+earlier misconception and must be deleted (see §9 Open tasks).
+
+Implementation: `MPETokenizer.encode_chords` / `chords_to_midi` in
+`src/tokenizer.py`.
+
+---
+
+## 6. EigenSpace — positional embedding, not a token
+
+Each chord has a 4-vector `(α, β, γ, D)` from `src/eigenspace.py`.
+It is **not tokenized**.
+
+Pipeline:
+1. Compute per-chord `(α, β, γ, D)` → save as `<stem>.eigen.npy`.
+2. At model input, broadcast the chord vector across every token of its
+   L1+L2 block.
+3. Project `(4 → n_embd)` via a small MLP and **add** to the positional
+   embedding before the transformer.
+
+**Open decision**: whether to broadcast across the whole block or inject
+only at `CHORD_START`. Default chosen for Phase A: broadcast across the
+block. Revisit if form adherence is poor.
+
+---
+
+## 7. Decision log (locked)
+
+Do not revisit without cause.
+
+- **Option 2 is Phase A.** Option 1 (symbolic-only) is skipped. Option 3
+  (holdrian column) is Phase B.
+- **16 style buckets**, sourced from `formats.correctStyleTokensInMeta`.
+  Never collapsed.
+- **BAR is plain**, no numbering. Structure comes from `Form_*` + `|` +
+  `|:` `:|` + EigenSpace continuity.
+- **Root in L1 is a letter.** 53-TET realization is L2 only.
+- **EigenSpace is positional**, not lexical. One autoregressive head.
+- **`src/formats.py` is canonical** for style buckets, note names, chord
+  qualities, and structural markers.
+- **Previous 12-TET paper is a reference, not a spec.** Concepts transfer;
+  vocabularies do not.
+
+---
+
+## 8. Failure log (what went wrong, what we learned)
+
+Record failures here so future sessions do not repeat them.
+
+| # | Failure | Root cause | Fix / lesson |
+|---|---------|------------|--------------|
+| F1 | Previous 12-TET model produced harmony but ignored form | No form information in training input | Text sidecar now emits `Form_*`, `|:`, `:|` inline |
+| F2 | Agent proposed collapsing styles to 4 buckets | Optimized for vocab size without checking project conventions | `formats.py` is canonical; 16 buckets stay |
+| F3 | `BAR_1 … BAR_64` tokens added | Assumed absolute bar indices help form | Musicians think in sections, not bar numbers; BAR is now plain. Absolute indices fight generalization across repeated sections |
+| F4 | `ROOT_<pc_0..52>` invented from MIDI bass | Mixed L1 semantics into L2 | Root is a letter in L1 only; remove `ROOT_*` from vocab |
+| F5 | Agent treated the published 12-TET paper as the current spec | Skipped alignment step | Align on intent before code. Previous paper = reference, not spec |
+| F6 | Earlier drafts wrote strategy as opinionated prose | Wrong register | Strategy is instructional: state decisions, not opinions |
+
+---
+
+## 9. Open tasks (the road)
+
+### Phase A — Hybrid Symbolic + MIDI/MPE (current)
+
+1. **Tokenizer cleanup**
+   - Remove `ROOT_<pc>` tokens and all code paths that emit them
+   - Confirm vocab size after removal; save `vocab.json`
+2. **L1 parser** — `parse_text_sidecar(path) -> list[Token]`
+   - Reads a `.txt`, yields header tokens once, then per-chord L1 blocks
+     interleaved with structural markers
+3. **L1+L2 interleaver** — `merge_levels(txt_tokens, mid_tokens) -> list[int]`
+   - Aligns by chord index; emits
+     `<start> …header… [L1_block_k, L2_block_k for k in chords]… <end>`
+   - Asserts equal chord counts on both sides; logs and skips on mismatch
+4. **EigenSpace sidecar builder**
+   - For each `<stem>.mid`, compute chord sequence + `(α, β, γ, D)` per chord,
+     save `<stem>.eigen.npy` next to the MIDI
+5. **Model update** (`src/model.py`)
+   - Add `nn.Linear(4, n_embd)` (or small MLP) for EigenSpace
+   - At forward: broadcast chord vector across each chord's token span,
+     project, and add to positional embedding
+6. **Preprocess + pack** (`preprocess.py`, `pack_data.py`)
+   - Write the interleaved stream + aligned EigenSpace tensor to packed bins
+7. **Train Model A** (`train.py`)
+   - Run name: `modelA_hybrid_v1`
+   - Save to `checkpoints/modelA_hybrid_v1/`
+8. **Evaluate Model A** (§10)
+
+### Phase B — Hybrid Symbolic + 53-TET column
+
+Only start after A is evaluated. Reuse L1. Replace L2 with a full 53-TET
+holdrian-column representation (design TBD, to be specified here when
+Phase A is complete). Translator to MIDI runs after generation.
+
+### Phase C — Cleanup
+
+Delete or archive the obsolete files listed in §11 once A and B are
+reproducible from the production modules alone.
+
+---
+
+## 10. Evaluation criteria
+
+Model A success is judged on:
+
+1. **Form adherence.** Given a prompt with `FORM_A |: …` the generation
+   must emit a matching `:|` and a plausible `FORM_B` continuation.
+   Metric: fraction of generations with balanced `|:`/`:|` and a detected
+   section change.
+2. **Symbol↔voicing consistency.** Per chord block, the L2 pitches should
+   spell the L1 chord symbol within a 53-TET tolerance.
+   Metric: fraction of chords whose L2 pitch set maps (via
+   `voicing.py` / `chord_mapping.py`) back to the emitted L1 symbol.
+3. **Style conditioning.** Fix type, vary style; generate N progressions.
+   Style label must be recognizable in the L1 token statistics and in
+   listening tests.
+4. **Type conditioning.** Fix style, vary type; L2 pitch histograms must
+   shift between types.
+5. **Novelty vs memorization.** n-gram overlap with training set on L1
+   and on L2 below a threshold (TBD).
+
+---
+
+## 11. Main files in `src/`
+
+### Production — keep, extend
+| File | Role |
+|------|------|
+| `tokenizer.py`              | L1+L2 tokenizer, `MPETokenizer`, dataset, round-trip |
+| `formats.py`                | Canonical style/note/quality/structural definitions |
+| `xmlTranslator.py`          | iRealXML → chord + form sequence |
+| `voicing.py`                | Chord symbol → voicing realization |
+| `eigenspace.py`             | Per-chord `(α, β, γ, D)` computation |
+| `chord_mapping.py`          | 53-TET note names, chord interval maps |
+| `convention.py`             | 53-TET chord naming convention |
+| `transposition.py`          | Key/root transposition helpers |
+| `generate_53tet_dataset.py` | Builder of the parallel twin-tree dataset |
+| `preprocess.py`             | Training-data preparation |
+| `preprocess_runner.py`      | Parallel driver for preprocessing |
+| `pack_data.py`              | Pack preprocessed JSON → memory-mapped bins |
+| `model.py`                  | GPT-2 model (will gain EigenSpace PE) |
+| `trainer.py`                | Generic training loop |
+| `train.py`                  | Training entry point |
+| `configurator.py`           | Config override mechanism |
+| `generate.py`               | Inference / sampling entry |
+| `midi_viz.py`               | MIDI visualization (Plotly) |
+| `play_mpe.py`               | Playback of MPE MIDI |
+| `utils.py`, `mingpt_utils.py` | Shared helpers |
+
+### Obsolete — flag, clean in Phase C
+| File | Notes |
+|------|-------|
+| `build_parallel_dataset.py`    | Superseded by `generate_53tet_dataset.py` |
+| `04_runner.py`                 | Old training runner |
+| `debug_run.py`                 | Ad-hoc debug script |
+| `test_metadata_export.py`      | One-off metadata dump |
+| `test_something_standalone.py` | Scratch |
+| `to_compare.py`                | Scratch |
+| `utils_lenghts.py`             | Dead constants |
+
+### Drifted dev notebooks — read-only, clean in Phase C
+`01_musicXML_parser.ipynb`, `02_EigenSpace_mapping.ipynb`,
+`03_map_MIDI_to_EigenSpace.ipynb`, `03_map_MIDI_to_FTT.ipynb`,
+`04_53TET_conversion.ipynb`, `04_test_mpe.ipynb`,
+`04.5_data_augmentation_53edo.ipynb`, `05_generation.ipynb`,
+`05_mpe_tokenizer.ipynb`, `05_play_mpe53.ipynb`,
+`05.5_tokenization_quality_check.ipynb`, `06_plots_and_figures.ipynb`,
+`10_generate_midi_v2_fresh.ipynb`, `11_dataset_qc.ipynb`,
+`MIDI_test.ipynb`, `run.ipynb`, `testing_something.ipynb`
+
+---
+
+## 12. Agent workflow (process rules)
+
+Earlier sessions drifted. These rules prevent repeat drift.
+
+1. **Align on intent before touching code.** If the spec is ambiguous, ask.
+2. **`src/formats.py` is canonical.** Don't reinvent tables elsewhere.
+3. **Preserve diversity.** Don't collapse vocabulary categories without
+   explicit approval.
+4. **Don't invent tokens** that are not backed by sidecar data.
+5. **Previous 12-TET paper = reference, not spec.** Concepts transfer;
+   vocabularies do not.
+6. **One change at a time, verified.** After each tokenizer edit,
+   round-trip a sample and confirm vocab size.
+7. **Redundant files are flagged, not deleted.** Cleanup is Phase C.
+8. **Update this document when a decision changes.** Add to §7 (locked)
+   or §8 (failure log) as appropriate.
+# ANIMA Microtonal GPT — Strategy V3
+
+This document is the single source of truth for the current phase of the project.
+It defines the goal, the approach, the data contract, the tokenization, the
+model input, the agent workflow, and the role of each file in `src/`.
+It is also the outline of the paper.
+
+---
+
+## 1. Mission
+
+Train a GPT that generates **harmonic chord progressions in 53-TET
+microtonality** with learned voicings, conditioned on:
+
+- **Type** of microtonal transformation (from folder name, 14 classes)
+- **Style** (jazz, bossa, rock, soul, …)
+- **Form** (A / B / C / D, intro, head, coda, repeats)
+- **Tonality** (key)
+- **Time structure** (bars, chord durations)
+
+Two concrete models will be compared:
+
+- **Model A — Hybrid Symbolic + MIDI/MPE** (this phase)
+- **Model B — Hybrid Symbolic + full 53-TET holdrian column** (next phase)
+
+We start with A. When A works, we train B and compare.
+
+---
+
+## 2. Dataset (done)
+
+Parallel twin-tree 53-TET dataset, one-to-one mirror:
 
 ```
-transformer_output (384) → Linear(384, 174) → predicted_column (174)
+dataset/midi_files/53_tet_mpe/type_<k>_<label>/<stem>_<type>.mid
+dataset/text_files/53_tet_mpe/type_<k>_<label>/<stem>_<type>.txt
 ```
 
-- **Pitch positions**: sigmoid → values in [0, 1]. Interpret as velocity.
-  During generation, threshold (e.g., top-5 activations = the chord notes).
-- **Duration**: sigmoid or softmax over duration bins.
+- 14 type subdirs (microtonal transformations, including `type_0_major` = identity)
+- 672,840 MIDI files + 672,840 matching text files
+- Stems are aligned 1:1; the `type_<k>_<label>` folder carries the transformation label
 
-### Loss Function
+Text sidecars contain the symbolic content previously missing:
+`<style>`, style name, `<tonality>`, key, `Form_A/B/C/D`, `|:`, `:|`, `|`,
+and per-chord `. <duration> <root> <quality> <extensions...> [/ <bass>]`.
 
-NOT cross-entropy on token IDs. This is regression/multi-label:
+Example (truncated):
+```
+<style> Latin Form_A |: . 4.0 C maj7 | . 4.0 A m7 | ...  :|
+```
 
-- **Pitch activations**: Binary cross-entropy per position. The target is
-  the column vector (0.0 for inactive, velocity/127 for active).
-  Alternatively: MSE on the full vector.
-- **Duration**: Cross-entropy over discretized duration bins, or MSE on
-  normalized duration.
+---
 
-### Sequence Dimensions
+## 3. Approach: Option 2 — Hybrid L1 + L2
 
-| Metric | Old (token-level) | New (chord-level) |
-|--------|-------------------|-------------------|
-| Positions per song | ~761 | ~54 |
-| Embedding dimension | 384 | 384 |
-| Input vocabulary | 345 discrete tokens | 174-dim continuous vector |
-| Output | softmax over 345 | sigmoid over 174 |
-| EigenSpace alignment | smeared across ~12 tokens | 1:1 per position |
-| block_size needed | 1024 | 128 (generous) |
+Per chord, we emit two aligned blocks in a single stream:
 
-### Generation Process
+```
+[ L1 symbolic tokens from .txt ]  [ L2 MIDI/MPE tokens from .mid ]
+```
 
-1. Start with START token (a learned embedding, or a zero column).
-2. For each step:
-   a. The model predicts a 174-dim vector.
-   b. Extract pitch activations: take top-k (k=5 typically), or threshold.
-   c. Extract duration from the last dimension.
-   d. Compute EigenSpace from the predicted chord (the 53-TET steps +
-      their frequency ratios → α, β, γ, D).
-   e. Use that EigenSpace as the positional encoding for this new position.
-   f. Feed back, predict next column.
-3. Stop when END is predicted (a special dimension, or when a learned
-   "end probability" crosses threshold).
+- **L1** gives the model the semantic label (what chord, in what form, in what style).
+- **L2** gives the model the voicing (which 53-TET pitches, with which durations and velocities).
+- Alignment is **by chord index**: the k-th chord block in the `.txt` matches
+  the k-th CHORD_START…CHORD_END block in the `.mid`.
+- Song-level L1 tokens (style, tonality) appear once at the start.
+- Structural L1 tokens (`|`, `|:`, `:|`, `Form_*`) are emitted at their bar
+  boundary between chord blocks.
 
-### Key Properties
+This keeps every chord self-descriptive and lets the model learn the mapping
+`symbol → voicing` directly.
 
-- **The chord is atomic**: no serialization, no CHORD_START/CHORD_END needed.
-- **Pitch topology is preserved**: cell 0 and cell 1 are one 53-TET step
-  apart. Cell 0 and cell 53 are an octave. The model can learn spatial
-  patterns (voicing shapes) through the linear projection weights.
-- **EigenSpace maps 1:1**: one chord = one eigenspace = one position. No
-  chicken-and-egg. No smearing.
-- **Sequence is short**: 54 chords vs 761 tokens. Attention cost drops by
-  ~200x (quadratic in sequence length).
-- **No fake tokens**: no P_212, no V_6, no CHORD_START. The data is the data.
+### Why this layout
 
-### What Changes in the Codebase
+- The previous 12-TET model learned progressions fine but had no form.
+  The text sidecar now carries form. This is the fix.
+- Voicings are the research target; we must keep MIDI/MPE in the stream.
+- L1 and L2 share one vocabulary and one autoregressive loss. No dual head.
 
-| Component | Current | New |
-|-----------|---------|-----|
-| `05_midi_mpe_tokenization.py` | Produces flat token sequences | Produces column vectors (pitch-velocity + duration) |
-| `06_preprocess_dual_channel.py` | Expands eigenspace per token | Eigenspace already per chord — no expansion needed |
-| `08_tokenize_for_training.py` | Writes uint16 token IDs + float16 eigen | Writes float32 column vectors + float32 eigen |
-| `09_train_gpt2.py` | Token embedding + flat softmax | Linear input projection + sigmoid/regression output |
-| `10_generate.py` | Autoregressive token prediction | Autoregressive column prediction + top-k extraction |
-| `eigenspace.py` | EigenSpaceEmbedding MLP | Same — unchanged |
+---
 
-### Relationship to MidiTok (MIR Reference)
+## 4. Level 1 — Symbolic tokens (from `.txt`)
 
-MidiTok serializes MIDI events into discrete tokens. ANIMA v3 does not
-serialize — it projects the piano roll column directly. This is a different
-paradigm:
+Canonical source: `src/formats.py`. Do not invent new categories; reuse
+`correctStyleTokensInMeta`, `getNotes`, `getNatures`, `listToIgnore`,
+`splitChordTokens`, `splitSlashChords`.
 
-- MidiTok = NLP approach (discrete tokens, vocabulary, cross-entropy)
-- ANIMA v3 = Vision approach (continuous vectors, spatial structure, regression)
+Token groups:
 
-Both use transformers. MidiTok follows the language model paradigm applied to
-music. ANIMA v3 follows the image generation paradigm applied to the piano
-roll. The EigenSpace positional encoding has no equivalent in MidiTok.
+| Group         | Examples                                               | Source |
+|---------------|--------------------------------------------------------|--------|
+| Header        | `<style>`, `<tonality>`, `<type>`                      | literal |
+| Style (16)    | `Jazz Blues Folk Bossa Reggae Samba Funk Pop Son Rock Soul Balad RnB Gospel Afoxé "Even 8ths"` | `formats.correctStyleTokensInMeta` |
+| Tonality      | `C_major`, `A_minor`, …                                | sidecar |
+| Type (14)     | `TYPE_0_major`, `TYPE_1_…`, …                          | folder name |
+| Form          | `Form_A Form_B Form_C Form_D INTRO HEAD VERSE CODA SEGNO` | sidecar |
+| Structural    | `|`  `|:`  `:|`                                        | sidecar |
+| Chord start   | `.`                                                    | sidecar |
+| Duration      | `4.0`, `2.0`, `1.0`, `0.5`, …                          | sidecar |
+| Root (letter) | `C D E F G A B` + accidentals (20 names from `getNotes()`) | sidecar |
+| Quality       | 18 qualities from `getNatures()`                       | sidecar |
+| Extensions    | `b9`, `#11`, `add6`, …                                 | sidecar |
+| Slash bass    | `/` followed by root letter                            | sidecar |
 
-ANIMA v3 is comparable to MidiTok in the sense that both are autoregressive
-transformer models for music. It is an improved version in the sense that:
-1. Chord structure is preserved, not serialized.
-2. Pitch topology is explicit, not lost in arbitrary token IDs.
-3. Harmonic geometry (EigenSpace) informs the positional encoding.
-4. The representation is native to 53-TET — not an adapter on top of 12-TET.
+Rules:
+- Style bucket is chosen by the substring rules in `formats.correctStyleTokensInMeta`. Diversity is preserved (16 buckets, not 4).
+- Root is a **letter name**, not a pitch class. The 53-TET realization lives in L2.
+- `BAR` is a plain structural marker (no numbering). The model learns structure from `Form_*` + `|` + `|:` `:|`.
 
-### Open Questions
+---
 
-1. **Velocity encoding in the column**: raw MIDI velocity normalized to [0,1]?
-   Or binary (on/off) with a separate velocity channel?
-2. **Duration encoding**: one shared duration per chord works for this dataset.
-   If future data has per-note durations, the column needs expansion.
-3. **END detection**: add a 175th dimension as "end probability"? Or a
-   separate classification head?
-4. **Training loss weighting**: pitch activations are 98% zeros (sparse).
-   Need focal loss or class weighting to avoid trivial "predict all zeros."
-5. **How many pitch positions**: use the full 319 (step 106-424) or trim to
-   the observed 173 (step 164-336)? Trimming saves compute but limits
-   transposition range.
+## 5. Level 2 — MIDI/MPE tokens (from `.mid`)
+
+Per chord block:
+
+```
+CHORD_START DUR_<d> P_<step0> V_<v0> P_<step1> V_<v1> … CHORD_END
+```
+
+- `P_<step>` : 53-TET step index (0..52 within octave, with octave inferred from register band)
+- `V_<v>`    : quantized velocity bin
+- `DUR_<d>`  : chord duration bin
+- `CHORD_START` / `CHORD_END` : block delimiters shared with L1
+
+Implementation lives in `src/tokenizer.py` (`MPETokenizer.encode_chords` /
+`chords_to_midi`). No `ROOT_<pc>` tokens — the root lives in L1 as a letter.
+
+---
+
+## 6. EigenSpace — positional embedding, not a token
+
+Each chord has a 4-vector `(α, β, γ, D)` computed by `src/eigenspace.py`.
+We do **not** tokenize it.
+
+Pipeline:
+1. Compute per-chord `(α, β, γ, D)` → save as `<stem>.eigen.npy` sidecar.
+2. At model input, repeat the chord's vector across every token inside that
+   chord's L1+L2 block.
+3. Project through a small MLP `(4 → n_embd)` and **add** to the positional
+   embedding before the transformer blocks.
+
+This injects harmonic geometry as a continuous bias, leaving the discrete
+vocabulary untouched.
+
+---
+
+## 7. Model A vs Model B
+
+| Aspect        | Model A (now)                     | Model B (next)                         |
+|---------------|-----------------------------------|----------------------------------------|
+| L1            | Symbolic text sidecar             | Symbolic text sidecar (same)           |
+| L2            | MIDI + MPE                        | 53-TET holdrian column, no MIDI        |
+| Output        | MIDI directly                     | Column → MIDI via post-processor       |
+| Purpose       | Learn voicings from real MIDI     | Learn pure microtonal spelling         |
+| Training      | First                             | After A converges                      |
+
+Checkpoints and run names must include the model letter (`modelA_*`, `modelB_*`)
+so comparisons stay unambiguous.
+
+---
+
+## 8. Agent Workflow (process rules)
+
+These rules exist because earlier sessions drifted. Follow them.
+
+1. **Align on intent before touching code.** If the spec is ambiguous, ask. Do not guess.
+2. **`src/formats.py` is canonical** for style buckets, note names, chord qualities, and structural markers. Do not reinvent them in other files.
+3. **Preserve diversity.** Do not collapse vocabulary categories (styles, qualities, forms) without explicit approval.
+4. **Do not invent tokens** that are not backed by data in the sidecars (e.g. no `ROOT_<pc>` from MIDI bass).
+5. **The previous 12-TET paper is a reference, not a spec.** Concepts carry over; vocabularies do not.
+6. **One change at a time, verified.** After each tokenizer edit, round-trip a sample and confirm vocab size.
+7. **Redundant files are flagged, not deleted.** Cleanup happens in its own phase.
+
+---
+
+## 9. Main files in `src/`
+
+### Production — keep, extend
+| File | Role |
+|------|------|
+| `tokenizer.py`              | L1+L2 tokenizer, `MPETokenizer`, dataset class, round-trip |
+| `formats.py`                | Canonical style/note/quality/structural definitions |
+| `xmlTranslator.py`          | Parse iRealXML → chord + form sequence |
+| `voicing.py`                | Chord symbol → voicing realization |
+| `eigenspace.py`             | Per-chord `(α, β, γ, D)` computation |
+| `chord_mapping.py`          | 53-TET note names, chord interval maps |
+| `convention.py`             | 53-TET chord naming convention |
+| `transposition.py`          | Key/root transposition helpers |
+| `generate_53tet_dataset.py` | Builder of the parallel twin-tree dataset (done) |
+| `preprocess.py`             | Dual-channel training-data preparation |
+| `preprocess_runner.py`      | Parallel driver for preprocessing |
+| `pack_data.py`              | Packs preprocessed JSON into memory-mapped bins |
+| `model.py`                  | GPT-2 dual-channel model (will gain EigenSpace PE) |
+| `trainer.py`                | Generic training loop |
+| `train.py`                  | Training entry point |
+| `configurator.py`           | Config override mechanism |
+| `generate.py`               | Inference / sampling entry point |
+| `midi_viz.py`               | MIDI visualization (Plotly) |
+| `play_mpe.py`               | Playback of MPE MIDI |
+| `utils.py`, `mingpt_utils.py` | Shared helpers |
+
+### Obsolete — flag, clean later
+| File | Notes |
+|------|-------|
+| `build_parallel_dataset.py` | Superseded by `generate_53tet_dataset.py` |
+| `04_runner.py`              | Old training runner |
+| `debug_run.py`              | Ad-hoc debug script |
+| `test_metadata_export.py`   | One-off metadata dump |
+| `test_something_standalone.py` | Scratch |
+| `to_compare.py`             | Scratch |
+| `utils_lenghts.py`          | Dead constants, folded into `formats.py` where needed |
+
+### Drifted dev notebooks — flag, clean later
+`01_musicXML_parser.ipynb`, `02_EigenSpace_mapping.ipynb`,
+`03_map_MIDI_to_EigenSpace.ipynb`, `03_map_MIDI_to_FTT.ipynb`,
+`04_53TET_conversion.ipynb`, `04_test_mpe.ipynb`,
+`04.5_data_augmentation_53edo.ipynb`, `05_generation.ipynb`,
+`05_mpe_tokenizer.ipynb`, `05_play_mpe53.ipynb`,
+`05.5_tokenization_quality_check.ipynb`, `06_plots_and_figures.ipynb`,
+`10_generate_midi_v2_fresh.ipynb`, `11_dataset_qc.ipynb`,
+`MIDI_test.ipynb`, `run.ipynb`, `testing_something.ipynb`.
+
+These contain historical exploration. Treat as read-only until cleanup phase.
+
+---
+
+## 10. Requirements checklist
+
+Data / labels:
+- [x] Type of transformation tokenized (from folder name) — `TYPE_*`
+- [x] Style token present — 16 canonical buckets from `formats.py`
+- [x] Chord root tokenized (letter in L1; 53-TET realization in L2)
+- [x] Time sequence preserved (duration per chord + bar markers)
+- [x] Bar token — plain `BAR`, no numbering
+- [x] Style correctly named (e.g. `Jazz`, not `Swing`) via `formats.correctStyleTokensInMeta`
+- [x] Style at the right level of information (song-level header)
+- [x] Form token emitted (`Form_A`, `Form_B`, …)
+
+Tokenization correctness:
+- [x] Chord data correctly encoded (symbol in L1, voicing in L2)
+- [x] Chord duration encoded (`DUR_*` in L2, explicit float in L1)
+- [x] Bars encoded
+- [x] Conditioning context at generation: type + style + first chord
+
+Engineering:
+- [ ] Remove stray `ROOT_<pc>` tokens from `tokenizer.py` (use L1 letter)
+- [ ] Implement `parse_text_sidecar()` for L1
+- [ ] Implement `merge_levels()` to interleave L1+L2 by chord index
+- [ ] Compute `.eigen.npy` sidecars per file
+- [ ] Add EigenSpace MLP to `model.py` and sum into positional embedding
+- [ ] Training run `modelA_hybrid_v1`
+- [ ] Evaluation: form adherence, voicing plausibility, style match
+- [ ] Begin Model B (53-TET holdrian column L2)
+
+---
+
+## 11. Roadmap
+
+**Phase A — Hybrid symbolic + MIDI/MPE (current)**
+1. Tokenizer completion (L1 parser, L2 reuse, interleaver)
+2. EigenSpace sidecar + positional embedding
+3. Pack + train Model A
+4. Evaluate form, style, voicing quality
+
+**Phase B — Hybrid symbolic + 53-TET column**
+1. Define column L2 vocabulary
+2. Train Model B on same L1 with new L2
+3. Compare A vs B on identical prompts
+
+**Phase C — Cleanup & paper**
+1. Retire obsolete files and drifted notebooks
+2. Freeze final tokenizer, model, checkpoints
+3. Paper = this document, expanded with results
+
+---
+
+## 12. Archived design
+
+The earlier chord-as-column draft is preserved at
+`STRATEGY_V3_original_column_draft.md`. It informs Phase B and should not be
+edited as part of Phase A work.
