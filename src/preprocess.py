@@ -68,8 +68,74 @@ from tokenizer import (
     CHORD_START_TOKEN, CHORD_END_TOKEN,
     TYPE_PREFIX, TYPE_LABELS,
     STYLE_PREFIX, STYLE_LABELS,
+    FORM_PREFIX, FORM_LABELS,
     _extract_type_label,
 )
+
+
+# -----------------------------------------------------------------------------
+# PARALLEL-JSON SIDECAR (form + style metadata from iRealXML)
+# -----------------------------------------------------------------------------
+
+def _parallel_sidecar_path(midi_path: Path) -> Optional[Path]:
+    """
+    Map a 53-TET MPE MIDI path to its parallel JSON sidecar produced by
+    src/build_parallel_dataset.py.
+
+        dataset/midi_files/53_tet_mpe/type_<label>/<stem>.mid
+      → dataset/midi_files/53_tet_mpe/type_<label>_file/<stem>.json
+    """
+    parent = midi_path.parent
+    if not parent.name.startswith("type_"):
+        return None
+    sidecar_dir = parent.with_name(parent.name + "_file")
+    return sidecar_dir / (midi_path.stem + ".json")
+
+
+def _extract_form_markers_from_chord_tokens(chord_tokens: List) -> Dict[int, str]:
+    """
+    Scan an iRealXML-derived `chord_tokens` stream (as stored in the
+    parallel JSON sidecar) and return {bar_0idx: raw_form_label}.
+
+    Bar boundaries are '|' tokens. A Form_* marker that appears between
+    bar-pipe N and bar-pipe N+1 belongs to bar N+1 (0-indexed), i.e. the
+    bar that the marker introduces.
+    """
+    markers: Dict[int, str] = {}
+    bar_0idx = -1  # -1 = before the first bar
+    for tok in chord_tokens:
+        if tok == '|':
+            bar_0idx += 1
+        elif isinstance(tok, str) and tok.startswith('Form_'):
+            markers[bar_0idx + 1] = tok
+    return markers
+
+
+def load_parallel_metadata(midi_path: str) -> Dict:
+    """
+    Load the parallel-dataset JSON sidecar for a MIDI file, if present.
+
+    Returns:
+        {'form_markers': {bar_0idx: 'Form_X'},
+         'style_canonical': str | None,
+         'style_raw':       str | None}
+        Missing/invalid sidecar → empty defaults.
+    """
+    sidecar = _parallel_sidecar_path(Path(midi_path))
+    if sidecar is None or not sidecar.exists():
+        return {'form_markers': {}, 'style_canonical': None, 'style_raw': None}
+    try:
+        with open(sidecar, 'r') as f:
+            meta = json.load(f)
+    except Exception:
+        return {'form_markers': {}, 'style_canonical': None, 'style_raw': None}
+    chord_tokens = meta.get('chord_tokens') or []
+    return {
+        'form_markers':   _extract_form_markers_from_chord_tokens(chord_tokens),
+        'style_canonical': meta.get('style_canonical'),
+        'style_raw':       meta.get('style_raw'),
+    }
+
 
 # Lazy torch
 _torch_module = None
@@ -177,6 +243,8 @@ def preprocess_song(
     speed: float = 1.0,
     type_label: Optional[str] = None,
     style_label: Optional[str] = None,
+    form_markers: Optional[Dict[int, str]] = None,
+    use_parallel_metadata: bool = True,
     **_kwargs,
 ) -> Optional[Dict]:
     """
@@ -185,7 +253,9 @@ def preprocess_song(
     Pipeline:
       1. Parse MIDI → chord events (onset, duration, notes)
       2. Extract type label from path (if not provided)
-      3. Tokenize → flat token_ids with TYPE + STYLE conditioning (MIDI channel)
+      2b. Load parallel JSON sidecar → style_canonical + FORM markers
+          (only if not explicitly overridden via args)
+      3. Tokenize → flat token_ids with TYPE + STYLE + FORM conditioning
       4. For each chord: compute EigenSpace 4D (spatial channel)
       5. Build chord_spans (token position → chord index)
       6. Return aligned dict
@@ -195,7 +265,13 @@ def preprocess_song(
         tokenizer: MPETokenizer instance (creates default if None)
         speed: Playback speed multiplier
         type_label: Transformation type (e.g. "0_major"). Auto-detected if None.
-        style_label: Musical style (e.g. "jazz", "blues"). None = no STYLE token.
+        style_label: Musical style (e.g. "jazz", "blues"). If None and
+                     use_parallel_metadata is True, loaded from sidecar.
+        form_markers: Optional explicit {bar_0idx: raw_form} dict. If None and
+                      use_parallel_metadata is True, loaded from sidecar.
+        use_parallel_metadata: When True, read the matching
+                               type_<label>_file/<stem>.json sidecar for
+                               style + form metadata.
         
     Returns:
         Dict with all channels aligned, or None on failure
@@ -214,11 +290,21 @@ def preprocess_song(
     # Step 2: Extract type label from path if not provided
     if type_label is None:
         type_label = extract_type_label(str(midi_path))
-    
-    # Step 3: Tokenize (MIDI channel) — with TYPE + STYLE conditioning tokens
+
+    # Step 2b: Pull style + form metadata from the parallel JSON sidecar
+    # (built by src/build_parallel_dataset.py from the iRealXML source).
+    if use_parallel_metadata and (style_label is None or form_markers is None):
+        meta = load_parallel_metadata(str(midi_path))
+        if style_label is None:
+            style_label = meta.get('style_canonical')
+        if form_markers is None:
+            form_markers = meta.get('form_markers') or None
+
+    # Step 3: Tokenize (MIDI channel) — with TYPE + STYLE + FORM conditioning
     token_strs = tokenizer.encode_chords(chords, add_start_end=True,
                                           type_label=type_label,
-                                          style_label=style_label)
+                                          style_label=style_label,
+                                          form_markers=form_markers)
     token_ids = tokenizer.encode_to_ids(token_strs)
     
     # Step 4: EigenSpace 4D per chord — (α, β, γ, δ) position in harmonic space

@@ -166,6 +166,48 @@ STYLE_LABELS = [
 ]
 STYLE_TOKENS = [f"{STYLE_PREFIX}_{label}" for label in STYLE_LABELS]
 
+# Form conditioning tokens: encode the position inside the song form
+# (intro, verse, head, section A/B/C/D, segno, coda). Emitted at bar
+# boundaries where the original iRealXML source contains a <rehearsal>,
+# <segno>, or <coda> marker. Gives the model an explicit form signal
+# so generation follows phrase-level structure, not just local harmony.
+FORM_PREFIX = "FORM"
+FORM_LABELS = [
+    "INTRO",
+    "A",
+    "B",
+    "C",
+    "D",
+    "VERSE",
+    "HEAD",
+    "CODA",
+    "SEGNO",
+]
+FORM_TOKENS = [f"{FORM_PREFIX}_{label}" for label in FORM_LABELS]
+
+# Map raw XML form strings (as produced by xmlTranslator) to canonical FORM labels.
+# Raw values look like "Form_A", "Form_intro", "Form_Coda", "Form_Segno".
+def classify_form(raw_form):
+    """
+    Map a raw form marker ('Form_A', 'Form_intro', 'Form_Coda', ...)
+    to a canonical FORM_<LABEL>. Returns None if unrecognised.
+    """
+    if not raw_form:
+        return None
+    s = str(raw_form).strip()
+    if s.lower().startswith("form_"):
+        s = s[5:]
+    s = s.strip().upper()
+    # Normalise a few aliases
+    if s in ("IN", "INTR"):
+        s = "INTRO"
+    if s in ("OUTRO",):
+        s = "CODA"
+    if s in FORM_LABELS:
+        return s
+    return None
+
+
 # Mapping from raw iReal Pro style strings to canonical STYLE labels
 _RAW_STYLE_TO_GROUP = None
 
@@ -649,6 +691,11 @@ class MPETokenizer:
         #    10 musical genre/style categories from iReal Pro metadata
         for label in STYLE_LABELS:
             tokens.append(f"{STYLE_PREFIX}_{label}")
+
+        # 5b. Form conditioning tokens: FORM_<LABEL>
+        #     Phrase-level structure markers (intro, A/B/C/D, coda, segno, ...)
+        #     emitted at bar boundaries from iRealXML <rehearsal> data.
+        tokens.extend(FORM_TOKENS)
         
         # 6. Root tokens: ROOT_<0..52> (53-TET pitch class of bass note)
         for r in range(TET_53):
@@ -669,7 +716,8 @@ class MPETokenizer:
     # Encoding: MIDI → Tokens
     # -----------------------------------------------------------------
     
-    def encode_chords(self, chords, add_start_end=True, type_label=None, style_label=None):
+    def encode_chords(self, chords, add_start_end=True, type_label=None, style_label=None,
+                      form_markers=None):
         """
         Encode a list of chord events into a flat token sequence.
         
@@ -687,6 +735,10 @@ class MPETokenizer:
                         If provided, a TYPE_<label> token is prepended after <start>.
             style_label: Musical style label (e.g. "jazz", "blues").
                         If provided, a STYLE_<label> token is inserted after TYPE.
+            form_markers: Optional dict {bar_idx_0based: form_label}. When a chord
+                        opens a bar that has a form marker, a FORM_<LABEL> token is
+                        emitted just before the corresponding BAR_<n> token (or at
+                        the very start of the chord stream for bar 0).
         
         Returns:
             list[str]: Token string sequence
@@ -712,16 +764,35 @@ class MPETokenizer:
             else:
                 print(f"  Warning: unknown style label '{style_label}', skipping STYLE token")
 
+        # Normalise form_markers into {bar_0idx:int -> FORM_<LABEL>:str}
+        form_lookup = {}
+        if form_markers:
+            for bar_idx, raw in form_markers.items():
+                canon = classify_form(raw)
+                if canon is None:
+                    continue
+                ftok = f"{FORM_PREFIX}_{canon}"
+                if ftok in self.token_to_id:
+                    form_lookup[int(bar_idx)] = ftok
+
+        # Emit FORM marker for bar 0 (first bar) before any chord, if present.
+        if 0 in form_lookup:
+            tokens.append(form_lookup[0])
+
         last_bar = -1  # Track bar lines (0-indexed)
 
         for i, chord in enumerate(chords):
-            # Insert BAR_N token at bar boundaries
+            # Insert BAR_N token at bar boundaries (with optional FORM_X before it)
             current_bar = int(chord['onset_beats'] // self.beats_per_bar)  # 0-indexed
             if current_bar > last_bar:
                 bars_to_emit = current_bar - max(0, last_bar)
                 for b in range(bars_to_emit):
                     if last_bar >= 0:  # Don't add BAR before the first chord
                         bar_number = last_bar + b + 1 + 1  # 1-indexed
+                        # FORM_ marker for the bar we are entering (0-indexed = bar_number - 1)
+                        bar_0idx = bar_number - 1
+                        if bar_0idx in form_lookup:
+                            tokens.append(form_lookup[bar_0idx])
                         if bar_number <= BAR_MAX:
                             tokens.append(f"BAR_{bar_number}")
                         else:
@@ -760,7 +831,8 @@ class MPETokenizer:
 
         return tokens
     
-    def encode_file(self, midi_path, speed=1.0, add_start_end=True, type_label=None, style_label=None):
+    def encode_file(self, midi_path, speed=1.0, add_start_end=True, type_label=None,
+                    style_label=None, form_markers=None):
         """
         Parse and tokenize a MIDI MPE file.
         
@@ -785,7 +857,8 @@ class MPETokenizer:
         if type_label is None:
             type_label = _extract_type_label(midi_path)
         return self.encode_chords(chords, add_start_end=add_start_end,
-                                  type_label=type_label, style_label=style_label)
+                                  type_label=type_label, style_label=style_label,
+                                  form_markers=form_markers)
     
     def encode_to_ids(self, tokens):
         """

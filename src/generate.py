@@ -309,7 +309,7 @@ def generate_with_eigenspace(
                 # Chord complete — recompute true eigenspace for the whole
                 # sequence so this chord's tokens get their real values
                 eigen_array = eigen_computer.compute_for_tokens(all_tokens_str)
-            elif next_token in ('BAR', 'REST', '<start>', '<end>', '<sep>') or next_token.startswith('TYPE_') or next_token.startswith('STYLE_') or next_token.startswith('BAR_'):
+            elif next_token in ('BAR', 'REST', '<start>', '<end>', '<sep>') or next_token.startswith('TYPE_') or next_token.startswith('STYLE_') or next_token.startswith('BAR_') or next_token.startswith('FORM_'):
                 # Structural/conditioning tokens get defaults (matching training)
                 eigen_array = np.concatenate([eigen_array, _DEFAULT_EIGEN], axis=0)
             else:

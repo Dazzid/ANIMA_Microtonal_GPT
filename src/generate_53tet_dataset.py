@@ -1,8 +1,9 @@
 """
 Script to generate 53-TET MIDI and Text files in parallel.
-Reads 12-TET MIDI files from dataset/midi_files/mpe
-Outputs 53-TET MIDI files to dataset/midi_files/53_tet_mpe
-Outputs 53-TET Text files to dataset/text_files/53_tet_files
+Reads 12-TET MIDI files from dataset/midi_files/12_tet_mpe
+Outputs 53-TET MIDI files to dataset/midi_files/53_tet_mpe/type_<label>/<stem>_<type>.mid
+Outputs 53-TET Text files to dataset/text_files/53_tet_mpe/type_<label>/<stem>_<type>.txt
+(Text tree is a 1:1 mirror of the MIDI tree.)
 """
 
 import os
@@ -563,8 +564,8 @@ def main():
     # OUTPUT: dataset/midi_files/53_tet_mpe (organized by type subfolders)
     OUTPUT_MIDI_BASE = ROOT_DIR / 'dataset' / 'midi_files' / '53_tet_mpe'
     
-    # OUTPUT TEXT: dataset/text_files/53_tet_files
-    OUTPUT_TEXT_DIR = ROOT_DIR / 'dataset' / 'text_files' / '53_tet_files'
+    # OUTPUT TEXT: dataset/text_files/53_tet_mpe (organized by type subfolders — mirror of MIDI tree)
+    OUTPUT_TEXT_BASE = ROOT_DIR / 'dataset' / 'text_files' / '53_tet_mpe'
     
     # Configuration
     NUM_WORKERS = args.workers
@@ -592,7 +593,7 @@ def main():
     print(f"--- 53-TET DATASET GENERATOR ---")
     print(f"Input Directory: {INPUT_MIDI_DIR}")
     print(f"MIDI Output:     {OUTPUT_MIDI_BASE}")
-    print(f"Text Output:     {OUTPUT_TEXT_DIR}")
+    print(f"Text Output:     {OUTPUT_TEXT_BASE}")
     print(f"Scale Types:     {TARGET_SCALE_TYPES}")
     print(f"Workers:         {NUM_WORKERS}")
     print(f"Limit:           {LIMIT if LIMIT > 0 else 'ALL'}")
@@ -604,7 +605,7 @@ def main():
 
     # Create Outputs
     OUTPUT_MIDI_BASE.mkdir(parents=True, exist_ok=True)
-    OUTPUT_TEXT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_TEXT_BASE.mkdir(parents=True, exist_ok=True)
     
     # Collect Files
     midi_files = sorted(INPUT_MIDI_DIR.glob('*.mid'))
@@ -618,13 +619,18 @@ def main():
         print("No MIDI files found.")
         return
 
-    # Prepare Tasks — each scale type gets its own subfolder
+    # Prepare Tasks — each scale type gets its own subfolder in BOTH trees
     tasks = []
+    for scale_type in TARGET_SCALE_TYPES:
+        type_midi_dir = OUTPUT_MIDI_BASE / scale_type
+        type_text_dir = OUTPUT_TEXT_BASE / scale_type
+        type_midi_dir.mkdir(parents=True, exist_ok=True)
+        type_text_dir.mkdir(parents=True, exist_ok=True)
     for m in midi_files:
         for scale_type in TARGET_SCALE_TYPES:
             type_midi_dir = OUTPUT_MIDI_BASE / scale_type
-            type_midi_dir.mkdir(parents=True, exist_ok=True)
-            tasks.append((m, type_midi_dir, OUTPUT_TEXT_DIR, scale_type))
+            type_text_dir = OUTPUT_TEXT_BASE / scale_type
+            tasks.append((m, type_midi_dir, type_text_dir, scale_type))
     
     # Execute Parallel
     print("\nStarting parallel processing...")
