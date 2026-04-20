@@ -3,26 +3,28 @@ eigenspace.py
 =============
 EigenSpace computation module for 53-TET chord sequences.
 
-Maps each chord in a tokenized sequence to its 4D EigenSpace coordinates:
-  (α, β, γ, δ)
+Maps each chord to its 4D EigenSpace coordinates:
+  (α, β, γ, D)
 
 Where:
-  α = frequency ratio of the 3rd (relative to root)
-  β = frequency ratio of the 5th (relative to root)
-  γ = frequency ratio of the 7th (relative to root)
-  δ = frequency ratio of the root pitch class = 2^(root_pc/53)
+  α = frequency ratio of the 3rd   (relative to root, octave-folded)
+  β = frequency ratio of the 5th   (relative to root, octave-folded)
+  γ = frequency ratio of the 7th   (relative to root, octave-folded)
+  D = sensory dissonance at (α, β, γ) from the pre-computed
+      4D EigenSpace dissonance map (DissonanceMap.lookup)
 
-Dissonance is root-dependent: the same interval pattern on different root
-pitch classes produces different harmonic series interactions. The δ axis
-captures this, making the eigenvector a complete harmonic fingerprint.
+The eigenvector is **root-invariant**: Cmaj7 ≡ Dmaj7 ≡ F#maj7, because the
+intervals are always measured relative to the chord root and folded into a
+single octave (9ths, 11ths, 13ths collapse onto their parent classes).
+Slash chords use the **named** root, not the bass.
 
 Usage
 -----
-  from eigenspace import EigenSpaceComputer
+  from eigenspace import DissonanceMap, classify_intervals
 
-  computer = EigenSpaceComputer()
-  coords = computer.compute_for_tokens(token_strs)
-  # coords shape: (seq_len, 4) — one (α, β, γ, δ) per token position
+  diss_map = DissonanceMap()
+  alpha, beta, gamma = classify_intervals(intervals)
+  D = diss_map.lookup(alpha, beta, gamma)
 
 For the model:
   from eigenspace import EigenSpaceEmbedding
@@ -70,9 +72,10 @@ CANONICAL_SEVENTHS = sorted([42, 43, 44, 45, 46, 47, 48, 49, 50, 51])
 DEFAULT_ALPHA = 1.0     # unison
 DEFAULT_BETA  = 1.0     # unison
 DEFAULT_GAMMA = 2.0     # octave (only used for non-chord tokens)
-DEFAULT_DELTA = 1.0     # root = 0 → ratio 2^(0/53) = 1.0
+DEFAULT_D     = 0.0     # dissonance fallback (filled from map.diss_mean at runtime)
+DEFAULT_DELTA = DEFAULT_D  # alias used by preprocess.py
 
-# Number of EigenSpace dimensions (α, β, γ, δ)
+# Number of EigenSpace dimensions (α, β, γ, D)
 N_EIGEN = 4
 
 
@@ -90,38 +93,41 @@ def _snap_to_nearest(value: int, canonical: list) -> int:
     return min(canonical, key=lambda c: abs(c - value))
 
 
-def classify_intervals(intervals: List[int], root_pc: int = 0) -> Tuple[float, float, float, float]:
+def classify_intervals(intervals: List[int], root_pc: int = 0) -> Tuple[float, float, float]:
     """
-    Classify a chord's intervals into (α, β, γ, δ) EigenSpace coordinates.
-    
-    Takes a list of 53-TET intervals relative to root (e.g. [0, 18, 31, 44])
-    and identifies the third, fifth, and seventh to compute frequency ratios.
-    The root pitch class is encoded as δ = 2^(root_pc/53).
-    
-    Each note is assigned to exactly one zone (α, β, γ). Notes outside the
-    three zones (seconds, sixths, gaps) are discarded as extensions.
-    Within each zone, the lowest pitch wins. After selection, each step is
-    snapped to its nearest canonical vocabulary value.
-    
-    For triads (no seventh detected): γ = β — the seventh collapses to the
-    fifth, placing triads on the γ=β diagonal of the EigenSpace tetrahedron.
-    
-    Dissonance is root-dependent: the same interval pattern on different
-    roots produces different harmonic series interactions. δ captures this.
-    
+    Classify a chord's intervals into (α, β, γ) frequency ratios.
+
+    Takes a list of 53-TET intervals **relative to the chord root** (e.g.
+    ``[0, 18, 31, 44]``) and identifies the third, fifth, and seventh.
+
+    Semantics (root-invariant):
+        * All intervals are folded into one octave (``mod 53``) by the caller
+          before this function is invoked. 9ths / 11ths / 13ths collapse onto
+          their parent classes; notes outside the α/β/γ zones are discarded
+          as extensions.
+        * Each selected step is snapped to its nearest canonical vocabulary
+          value (``CANONICAL_THIRDS`` / ``_FIFTHS`` / ``_SEVENTHS``).
+        * Triads (no seventh): γ = β, placing them on the γ=β diagonal.
+
+    The 4th coordinate D (sensory dissonance) is *not* returned here — it
+    comes from :class:`DissonanceMap.lookup(α, β, γ)` and is root-invariant
+    as well. See :mod:`eigen_sidecar` for the per-chord 4D builder.
+
     Args:
-        intervals: Sorted list of intervals (mod 53), with 0 = root
-        root_pc: Root pitch class (0–52 in 53-TET), default 0
-        
+        intervals: List of intervals in 53-TET steps, already folded mod 53.
+        root_pc: Kept for API compatibility (unused). The output is
+            root-invariant by construction.
+
     Returns:
-        (alpha, beta, gamma, delta) frequency ratios
+        (alpha, beta, gamma) frequency ratios.
     """
-    iv = sorted([x for x in intervals if 0 < x < 53])
-    
+    del root_pc  # root-invariant by design
+    iv = sorted({x % TET_53 for x in intervals if (x % TET_53) != 0})
+
     third = None
     fifth = None
     seventh = None
-    
+
     for step in iv:
         if step in THIRD_RANGE and third is None:
             third = step
@@ -129,25 +135,21 @@ def classify_intervals(intervals: List[int], root_pc: int = 0) -> Tuple[float, f
             fifth = step
         elif step in SEVENTH_RANGE and seventh is None:
             seventh = step
-    
-    # Snap to canonical vocabulary values
+
     if third is not None:
         third = _snap_to_nearest(third, CANONICAL_THIRDS)
     if fifth is not None:
         fifth = _snap_to_nearest(fifth, CANONICAL_FIFTHS)
     else:
-        fifth = 31  # default to perfect fifth
+        fifth = 31  # default perfect fifth
     if seventh is not None:
         seventh = _snap_to_nearest(seventh, CANONICAL_SEVENTHS)
-    
+
     alpha = get_53tet_ratio(third) if third else DEFAULT_ALPHA
     beta  = get_53tet_ratio(fifth)
-    # Triads: γ = β (seventh collapses to fifth)
-    gamma = get_53tet_ratio(seventh) if seventh else beta
-    # δ — root pitch class as frequency ratio (root-dependent dissonance)
-    delta = get_53tet_ratio(root_pc % TET_53)
-    
-    return alpha, beta, gamma, delta
+    gamma = get_53tet_ratio(seventh) if seventh else beta  # triad → γ=β
+
+    return alpha, beta, gamma
 
 
 # =============================================================================
@@ -260,10 +262,13 @@ class DissonanceMap:
 
 
 # =============================================================================
-# FREQUENCY-AWARE PLOMP-LEVELT DISSONANCE
+# FREQUENCY-AWARE EIGENSPACE DISSONANCE
 # =============================================================================
+# Pairwise roughness kernel used as the sensory-dissonance back-end of the
+# 4D EigenSpace map. The coefficients below are the standard Plomp-Levelt /
+# Sethares roughness constants; the name `eigenspace_dissonance` refers to
+# the role of this function inside the EigenSpace framework.
 
-# Plomp-Levelt constants
 _PL_DSTAR = 0.24
 _PL_S1    = 0.0207
 _PL_S2    = 18.96
@@ -273,12 +278,12 @@ _PL_A1    = -3.51
 _PL_A2    = -5.75
 
 
-def plomp_levelt_dissonance(
+def eigenspace_dissonance(
     frequencies: np.ndarray,
     amplitudes: np.ndarray,
 ) -> float:
     """
-    Vectorized Plomp-Levelt dissonance from an array of partials.
+    Vectorized EigenSpace sensory-dissonance kernel over an array of partials.
 
     Uses absolute frequencies so the result is register-aware:
     low-register chords have wider critical bands → higher dissonance.
@@ -308,8 +313,8 @@ def chord_dissonance_from_pitches(
     n_harmonics: int = 6,
 ) -> float:
     """
-    Compute Plomp-Levelt dissonance for a chord given its absolute 53-TET
-    pitches (NOT folded to one octave — uses the actual register).
+    Compute EigenSpace sensory dissonance for a chord given its absolute
+    53-TET pitches (NOT folded to one octave — uses the actual register).
 
     Each pitch is expanded into *n_harmonics* partials with amplitudes
     decaying as 1/h (sawtooth-like spectrum, more realistic than flat).
@@ -331,7 +336,7 @@ def chord_dissonance_from_pitches(
             freqs.append(f0 * h)
             amps.append(1.0 / h)          # 1/h roll-off
 
-    return plomp_levelt_dissonance(
+    return eigenspace_dissonance(
         np.array(freqs, dtype=np.float64),
         np.array(amps, dtype=np.float64),
     )
@@ -348,22 +353,33 @@ class EigenSpaceComputer:
     For each position in a token sequence, this produces a 4D vector:
       (α, β, γ, δ)
     
-    These define the chord's position in harmonic space.  Dissonance
-    is root-dependent — δ captures the root pitch class as a frequency
-    ratio, completing the harmonic fingerprint.
-    
+    These define the chord's position in harmonic space as
+    (α, β, γ, D), all root-invariant.
+
     The coordinates are constant across all tokens within a chord
     (from CHORD_START to CHORD_END), and reset to defaults between chords.
+
+    .. note::
+       This class is **legacy**. It infers the root as the lowest pitch
+       (bass), which is wrong for slash chords. The production path uses
+       :mod:`eigen_sidecar` with the symbolic L1 root and produces a
+       per-chord ``.eigen.npy`` sidecar aligned to the merged token stream.
     """
-    
-    def __init__(self, dataset_path: str = None, **_kwargs):
+
+    def __init__(self, dataset_path: str = None, diss_map: "DissonanceMap" = None,
+                 **_kwargs):
         """
         Args:
-            dataset_path: Unused (kept for backward-compatible call-sites).
-                          The DissonanceMap is no longer loaded.
+            dataset_path: Forwarded to ``DissonanceMap`` if ``diss_map`` is None.
+            diss_map: Optional pre-loaded DissonanceMap (re-used across calls).
         """
-        pass
-    
+        if diss_map is None:
+            try:
+                diss_map = DissonanceMap(dataset_path=dataset_path)
+            except FileNotFoundError:
+                diss_map = None
+        self.diss_map = diss_map
+
     def _extract_chord_pitches(self, token_strs: List[str], 
                                 start_idx: int) -> List[int]:
         """
@@ -400,42 +416,51 @@ class EigenSpaceComputer:
     def compute_for_tokens(self, token_strs: List[str]) -> np.ndarray:
         """
         Compute EigenSpace coordinates for each position in a token sequence.
-        
-        Every token within a chord inherits that chord's (α, β, γ, δ).
+
+        Every token within a chord inherits that chord's (α, β, γ, D).
         Non-chord tokens (BAR, <start>, <end>, etc.) get default values.
-        
+
         Args:
             token_strs: List of token strings
-            
+
         Returns:
-            np.ndarray of shape (len(token_strs), 4) — [α, β, γ, δ] per position
+            np.ndarray of shape (len(token_strs), 4) — [α, β, γ, D] per position
         """
         n = len(token_strs)
-        coords = np.full((n, N_EIGEN), [DEFAULT_ALPHA, DEFAULT_BETA, DEFAULT_GAMMA, DEFAULT_DELTA], 
-                         dtype=np.float32)
-        
+        d_default = (float(self.diss_map.diss_mean)
+                     if self.diss_map is not None else DEFAULT_D)
+        coords = np.full(
+            (n, N_EIGEN),
+            [DEFAULT_ALPHA, DEFAULT_BETA, DEFAULT_GAMMA, d_default],
+            dtype=np.float32,
+        )
+
         i = 0
         while i < n:
             if token_strs[i] == "CHORD_START":
-                # Extract pitches from this chord
                 pitches = self._extract_chord_pitches(token_strs, i)
                 intervals = self._pitches_to_intervals(pitches)
-                root_pc = min(pitches) % TET_53 if pitches else 0
-                alpha, beta, gamma, delta = classify_intervals(intervals, root_pc=root_pc)
-                
+                alpha, beta, gamma = classify_intervals(intervals)
+                if self.diss_map is not None:
+                    d = self.diss_map.lookup(alpha, beta, gamma)
+                    if d is None:
+                        d = d_default
+                else:
+                    d = d_default
+
                 # Fill all tokens in this chord with the same coordinates
                 j = i
                 while j < n and token_strs[j] != "CHORD_END":
-                    coords[j] = [alpha, beta, gamma, delta]
+                    coords[j] = [alpha, beta, gamma, d]
                     j += 1
                 if j < n:  # include CHORD_END itself
-                    coords[j] = [alpha, beta, gamma, delta]
+                    coords[j] = [alpha, beta, gamma, d]
                     j += 1
-                
+
                 i = j
             else:
                 i += 1
-        
+
         return coords
     
     def compute_for_ids(self, token_ids: List[int], id_to_token: dict) -> np.ndarray:
@@ -479,22 +504,23 @@ if HAS_TORCH:
     class EigenSpaceEmbedding(nn.Module):
         """
         Projects 4D EigenSpace coordinates into the transformer's embedding space.
-        
+
         Architecture:
-          (α, β, γ, δ)  →  Linear(4, hidden)  →  GELU  →  Linear(hidden, n_embd)
-        
-        The input coordinates define a chord's complete position in
-        harmonic space: interval ratios (α, β, γ) plus the root frequency
-        ratio (δ).  Dissonance is root-dependent, so δ is essential.
-        
+          (α, β, γ, D)  →  Linear(4, hidden)  →  GELU  →  Linear(hidden, n_embd)
+
+        The input coordinates define a chord's complete position in harmonic
+        space: interval ratios (α, β, γ) plus the sensory-dissonance scalar D
+        from the pre-computed EigenSpace dissonance map. All four dimensions
+        are root-invariant.
+
         This IS the model's positional encoding (v2 architecture).
         """
-        
+
         def __init__(self, n_embd: int, n_eigen: int = N_EIGEN, hidden: int = 64):
             """
             Args:
                 n_embd: Output dimension (must match transformer embedding dim)
-                n_eigen: Input dimension (default 4: α, β, γ, δ)
+                n_eigen: Input dimension (default 4: α, β, γ, D)
                 hidden: Hidden layer dimension (default 64)
             """
             super().__init__()
@@ -572,9 +598,9 @@ if __name__ == "__main__":
     ]
     
     for intervals, label in test_cases:
-        a, b, g, d = classify_intervals(intervals)
+        a, b, g = classify_intervals(intervals)
         triad_mark = " [TRIAD γ=β]" if abs(g - b) < 1e-6 else ""
-        print(f"  {str(intervals):25s}  → α={a:.5f} β={b:.5f} γ={g:.5f} δ={d:.5f}   ({label}){triad_mark}")
+        print(f"  {str(intervals):25s}  → α={a:.5f} β={b:.5f} γ={g:.5f}   ({label}){triad_mark}")
     
     # 2. Test dissonance map loading
     print("\n2. Dissonance map:")
@@ -618,7 +644,7 @@ if __name__ == "__main__":
         print(f"  Coordinates shape: {coords.shape}")
         print()
         for i, (tok, c) in enumerate(zip(test_tokens, coords)):
-            print(f"    {i:2d}  {tok:15s}  α={c[0]:.4f} β={c[1]:.4f} γ={c[2]:.4f} δ={c[3]:.4f}")
+            print(f"    {i:2d}  {tok:15s}  α={c[0]:.4f} β={c[1]:.4f} γ={c[2]:.4f} D={c[3]:.4f}")
     except Exception as e:
         print(f"  [SKIP] {e}")
     

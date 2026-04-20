@@ -5,11 +5,11 @@ GPT-2 model for 53-TET microtonal music generation.
 
 Dual-channel architecture:
   Channel 1 — Token IDs    → token embedding → self-attention
-  Channel 2 — EigenSpace 4D → harmonic positional encoding (α, β, γ, δ)
+  Channel 2 — EigenSpace 4D → harmonic positional encoding (α, β, γ, D)
 
 Positional encoding design:
   - EigenSpace: harmonic position in psychoacoustic space (chord-level)
-  - Local position: intra-chord token ordering (CHORD_START=0, DUR=1, ROOT=2, PV=3...)
+  - Local position: intra-chord token ordering (CHORD_START=0, DUR=1, PV=2, ...)
   - Sequential position: song-level ordering (standard learned positional embedding)
 
 Model sizes:
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class ModelConfig:
     """GPT-2 model configuration for 53-TET music."""
     # Core architecture
-    vocab_size: int = 2711
+    vocab_size: int = 2930
     block_size: int = 4096
     n_layer: int = 12
     n_head: int = 12
@@ -48,7 +48,7 @@ class ModelConfig:
     bias: bool = False
     # EigenSpace positional encoding
     use_eigenspace: bool = True
-    n_eigen: int = 4              # (α, β, γ, δ)
+    n_eigen: int = 4              # (α, β, γ, D)
     eigen_hidden: int = 128       # hidden dim in eigenspace projection MLP
     # Intra-chord positional encoding
     max_local_pos: int = 20       # max tokens within a chord (CHORD_START..CHORD_END)
@@ -77,7 +77,7 @@ class ModelConfig:
 
 class EigenSpacePositionalEncoding(nn.Module):
     """
-    Projects 4D harmonic coordinates (α, β, γ, δ) into positional encoding.
+    Projects 4D harmonic coordinates (α, β, γ, D) into positional encoding.
 
     EigenSpace coordinates define where a chord sits in harmonic space —
     the transformer's sense of "position" for chord-level structure
@@ -294,7 +294,7 @@ class GPT2(nn.Module):
         """
         Args:
             idx:     (B, T) int64 — token IDs
-            eigen:   (B, T, 4) float32 — eigenspace coordinates (α, β, γ, δ)
+            eigen:   (B, T, 4) float32 — eigenspace coordinates (α, β, γ, D)
             targets: (B, T) int64 — target token IDs (optional, for loss)
 
         Returns:

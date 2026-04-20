@@ -105,7 +105,7 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
         midi_path: Path to MIDI file
         sample_rate: Audio sample rate (default 44100)
         speed: Playback speed multiplier (default 1.2)
-        waveform: Waveform type - 'sine', 'triangle', 'square', or 'clarinet' (default 'sine')
+        waveform: Waveform type - 'sine', 'triangle', 'square', 'sawtooth', or 'clarinet' (default 'sine')
         reverb: Reverb amount as percentage (0-100), 0=no reverb, 100=maximum reverb
         save_path: Optional path to save .wav file to disk
     
@@ -219,10 +219,15 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
 
         attack_time   = min(0.06, effective_dur * 0.05)
         decay_time    = effective_dur * 0.30
-        # Sustain level: longer notes sustain fuller; very short notes decay away
-        sustain_level = np.clip(0.50 + 0.30 * np.log1p(effective_dur) / np.log1p(4.0), 0.35, 0.80)
+        # Sustain level: kept lower so the sustain phase starts already well
+        # below peak — combined with the exponential fade below this produces a
+        # natural piano/pluck-like decay instead of a flat organ-like hold.
+        sustain_level = np.clip(0.30 + 0.20 * np.log1p(effective_dur) / np.log1p(4.0), 0.18, 0.50)
         # Release: 15% of effective duration — short tail, ends well before next chord
         release_time  = np.clip(effective_dur * 0.15, 0.03, 0.18)
+        # Exponential decay rate applied during the sustain phase (per-second).
+        # ~1.2 nepers/s ≈ -10 dB/s: audible, natural, but not abrupt.
+        sustain_decay_rate = 1.2
 
         att_len = int(attack_time  * sample_rate)
         dec_len = int(decay_time   * sample_rate)
@@ -258,14 +263,21 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
             else:
                 current_val = decay_curve[actual_dec - 1]
 
-        # 3. Sustain Phase
+        # 3. Sustain Phase — exponential decay from current_val toward 0 so the
+        # note fades naturally while the key is still "held".
         remaining_gate = gate_len - cursor
         if remaining_gate > 0:
-            env[cursor : cursor + remaining_gate] = current_val
+            t_sus = np.arange(remaining_gate) / sample_rate
+            env[cursor : cursor + remaining_gate] = current_val * np.exp(-sustain_decay_rate * t_sus)
+            current_val = float(env[cursor + remaining_gate - 1])
             cursor += remaining_gate
 
-        # 4. Release Phase
-        env[gate_len : gate_len + rel_len] = np.linspace(current_val, 0.0, rel_len, endpoint=False)
+        # 4. Release Phase — exponential tail from wherever sustain ended.
+        if rel_len > 0:
+            t_rel = np.arange(rel_len) / sample_rate
+            # Fall to ~0.3% of current_val over rel_len (-50 dB) for a clean tail.
+            rel_rate = 6.0 / max(release_time, 1e-3)
+            env[gate_len : gate_len + rel_len] = current_val * np.exp(-rel_rate * t_rel)
 
         # Make sure we don't go out of bounds of the main audio buffer
         end_idx = start_idx + len(env)
@@ -282,17 +294,33 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
             # Pure sine wave
             osc = np.sin(p)
         elif waveform == 'triangle':
-            # Triangle wave (using Fourier series approximation)
-            osc = np.sin(p)
-            for n in range(3, 15, 2):  # Odd harmonics
-                osc += ((-1) ** ((n-1)/2)) * np.sin(n * p) / (n ** 2)
+            # Band-limited triangle via Fourier series.
+            # Odd harmonics only, amplitude 1/n^2, alternating sign.
+            max_n = max(1, int((sample_rate * 0.45) / max(freq, 1.0)))
+            osc = np.zeros_like(p)
+            for n in range(1, max_n + 1, 2):  # 1, 3, 5, ...
+                osc += ((-1) ** ((n - 1) // 2)) * np.sin(n * p) / (n ** 2)
             osc *= 8 / (np.pi ** 2)
         elif waveform == 'square':
-            # Square wave (using Fourier series approximation)
-            osc = np.sin(p)
-            for n in range(3, 15, 2):  # Odd harmonics
+            # Band-limited square via Fourier series.
+            # Odd harmonics only, amplitude 1/n.  Include as many as fit below
+            # Nyquist — with only ~7 harmonics the tone is too close to a sine
+            # because the upper partials carry the characteristic buzz.
+            max_n = max(1, int((sample_rate * 0.45) / max(freq, 1.0)))
+            osc = np.zeros_like(p)
+            for n in range(1, max_n + 1, 2):  # 1, 3, 5, ...
                 osc += np.sin(n * p) / n
             osc *= 4 / np.pi
+        elif waveform == 'sawtooth':
+            # Band-limited sawtooth via Fourier series.
+            # All harmonics (even + odd), amplitude 1/n, alternating sign.
+            # Include as many harmonics as fit below Nyquist to get the
+            # characteristic bright/buzzy timbre without aliasing.
+            max_n = max(1, int((sample_rate * 0.45) / max(freq, 1.0)))
+            osc = np.zeros_like(p)
+            for n in range(1, max_n + 1):
+                osc += ((-1) ** (n + 1)) * np.sin(n * p) / n
+            osc *= 2 / np.pi
         elif waveform == 'clarinet':
             # Clarinet-like (odd harmonics with specific weights)
             osc = (1.0 * np.sin(p)) - (0.11 * np.sin(3 * p)) + (0.04 * np.sin(5 * p))
@@ -300,8 +328,18 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
             # Default to sine
             osc = np.sin(p)
 
+        # Equal-loudness compensation (simplified Fletcher–Munson tilt).
+        # The ear is far less sensitive to low frequencies at moderate SPL, so
+        # bass notes in a chord sound buried against mid/high voices.  We apply
+        # a log-frequency gain relative to 1 kHz: low notes get boosted, highs
+        # are gently attenuated.  Exponent 0.35 gives a ~+10 dB lift at 100 Hz
+        # and ~-3 dB at 4 kHz — enough to mix chords evenly without muddying.
+        ref_freq = 1000.0
+        freq_gain = (ref_freq / max(freq, 20.0)) ** 0.35
+        freq_gain = float(np.clip(freq_gain, 0.65, 3.0))
+
         # Add to main buffer
-        audio[start_idx:end_idx] += osc * env * vel * 0.15
+        audio[start_idx:end_idx] += osc * env * vel * 0.15 * freq_gain
 
     # Apply reverb if requested (returns stereo)
     if reverb > 0:

@@ -115,9 +115,9 @@ CHORD_END_TOKEN = "CHORD_END"
 BAR_TOKEN = "BAR"
 REST_TOKEN = "REST"
 
-# Root token: encodes the chord root as a 53-TET pitch class (0–52)
-# ROOT_0 = C (approx), ROOT_9 = D (approx), etc.
-ROOT_PREFIX = "ROOT"
+# NOTE: ROOT_<pc> tokens were removed. Root in L1 is a letter (C, D, F#, ...)
+# sourced from the text sidecar. The 53-TET realization lives in L2 as P_/PV_.
+# See STRATEGY_V3.md §5 and failure F4.
 
 # BAR token is structural-only (no numbering). Musicians think in sections
 # (Form_A, Form_B) and beats, not absolute bar indices. FORM_* + BAR + |:
@@ -240,15 +240,15 @@ def classify_style(raw_style):
     # Exact-match aliases (formats.py rules)
     if el == 'Moderately':
         return 'Pop'
-    if el in ("Even 8th's", "Even 8's"):
+    if el in ("Even 8th's", "Even 8's", "Even 8ths"):
         return 'Even 8ths'
-    if el == "R'n'B":
+    if el in ("R'n'B", 'RnB'):
         return 'RnB'
     if el == 'Beatles':
         return 'Rock'
-    if el == 'Afoxe':
-        return 'Afox\u00e9'
-    if el in ('Worship', 'Traditional Gospel'):
+    if el in ('Afoxe', 'Afoxé'):
+        return 'Afoxé'
+    if el in ('Worship', 'Traditional Gospel', 'Hymn'):
         return 'Gospel'
     if el == 'Deliberately':
         return 'Pop'
@@ -281,8 +281,31 @@ def classify_style(raw_style):
         result = 'Rock'
     if 'Soul' in el:
         result = 'Soul'
-    if 'Balad' in el:
+    # Fuzzy RnB match: "R&B", "R n B", "Rhythm and Blues", "Rhythm n Blues", etc.
+    _el_norm = el.replace('&', 'n').replace(' and ', ' n ').replace(' ', '').lower()
+    if _el_norm in ('rnb', 'rhythmnblues', 'rhythmblues'):
+        result = 'RnB'
+    if 'Balad' in el or 'Ballad' in el:
         result = 'Balad'
+    # Latin / Cuban family (son, salsa, bachata, bolero, mambo, merengue, montuno,
+    # calypso, tango, cha cha, chacarera)
+    if ('Latin' in el or 'Salsa' in el or 'Bachata' in el or 'Bolero' in el
+            or 'Mambo' in el or 'Merengue' in el or 'Montuno' in el or 'Calypso' in el
+            or 'Tango' in el or 'Cha Cha' in el or 'Chacarera' in el):
+        result = 'Son'
+    # Brazilian folk/afro family (baião, afro, choro, marchinha, frevo, maxixe, forró)
+    if ('Baião' in el or 'Afro' in el or 'Choro' in el or 'Marchinha' in el
+            or 'Frevo' in el or 'Maxixe' in el or 'Forró' in el):
+        result = 'Samba'
+    # Shuffle feel → Blues
+    if 'Shuffle' in el:
+        result = 'Blues'
+    # Waltz (jazz waltz, gypsy waltz) → Jazz
+    if 'Waltz' in el:
+        result = 'Jazz'
+    # Disco → Pop
+    if 'Disco' in el:
+        result = 'Pop'
 
     return result  # may be None if nothing matched — caller decides fallback
 
@@ -701,17 +724,26 @@ class MPETokenizer:
         #     Phrase-level structure markers (intro, A/B/C/D, coda, segno, ...)
         #     emitted at bar boundaries from iRealXML <rehearsal> data.
         tokens.extend(FORM_TOKENS)
-        
-        # 6. Root tokens: ROOT_<0..52> (53-TET pitch class of bass note)
-        for r in range(TET_53):
-            tokens.append(f"{ROOT_PREFIX}_{r}")
-        
-        # 7. Compound pitch+velocity tokens: PV_<step>_<vel_bin>
+
+        # 6. Compound pitch+velocity tokens: PV_<step>_<vel_bin>
         #    Keeps intervallic contiguity within chords (no interleaved V_ tokens)
         for step in range(self.pitch_offset, self.max_pitch + 1):
             for v in range(1, self.num_vel_bins + 1):
                 tokens.append(f"PV_{step}_{v}")
-        
+
+        # 7. Level-1 symbolic tokens (from the .txt sidecars):
+        #    roots (R_*), qualities (Q_*), extensions (X_*), tonalities,
+        #    and L1 structural markers (., |, |:, :|, /).
+        #    Alphabet is frozen in dataset/l1_alphabet.json — see l1.py.
+        try:
+            from l1 import load_alphabet  # type: ignore
+            self._l1_alphabet = load_alphabet()
+            tokens.extend(self._l1_alphabet.vocab_tokens())
+        except Exception as exc:
+            # Keep L2-only behaviour if the alphabet file is missing.
+            print(f"  [tokenizer] L1 alphabet not loaded: {exc}")
+            self._l1_alphabet = None
+
         # Build mappings
         self.token_to_id = {tok: i for i, tok in enumerate(tokens)}
         self.id_to_token = {i: tok for i, tok in enumerate(tokens)}
@@ -812,13 +844,9 @@ class MPETokenizer:
                 q_dur = quantize_duration(chord['duration_beats'])
             tokens.append(f"DUR_{q_dur}")
 
-            # Root = pitch class (mod 53) of the lowest note — explicit for the model
-            sorted_notes = sorted(chord['notes'], key=lambda n: n['step_53'])[:MAX_CHORD_NOTES]
-            if sorted_notes:
-                root_pc = sorted_notes[0]['step_53'] % TET_53
-                tokens.append(f"{ROOT_PREFIX}_{root_pc}")
-
             # Notes as compound PV tokens (sorted low→high, preserves interval contiguity)
+            sorted_notes = sorted(chord['notes'], key=lambda n: n['step_53'])[:MAX_CHORD_NOTES]
+
             for note in sorted_notes:
                 step = max(self.pitch_offset, min(self.max_pitch, note['step_53']))
                 vel_bin = quantize_velocity(note['velocity'], self.num_vel_bins)
@@ -961,8 +989,8 @@ class MPETokenizer:
                             i += 1  # skip V_ token
                         notes.append({'step_53': step_53, 'velocity': vel})
                     
-                    # ROOT_ tokens are metadata — not needed for MIDI reconstruction
-                    
+                    # Unknown tokens (incl. legacy ROOT_*) are skipped
+
                     i += 1
                 
                 if notes:
@@ -1136,16 +1164,14 @@ class MPETokenizer:
         n_structural = 4
         n_duration = len(self.duration_grid)
         n_type = len(TYPE_LABELS)
-        n_root = TET_53
         n_pitch = self.max_pitch - self.pitch_offset + 1
         n_pv = n_pitch * self.num_vel_bins
-        
+
         print(f"  Total vocab size:   {self.vocab_size}")
         print(f"  Special tokens:     {n_special}  (IDs 0-{n_special-1})")
         print(f"  Structural tokens:  {n_structural}  ({CHORD_START_TOKEN}, {CHORD_END_TOKEN}, {BAR_TOKEN}, {REST_TOKEN})")
         print(f"  Duration tokens:    {n_duration}  (DUR_{self.duration_grid[0]} .. DUR_{self.duration_grid[-1]})")
         print(f"  Type tokens:        {n_type}  ({TYPE_TOKENS[0]} .. {TYPE_TOKENS[-1]})")
-        print(f"  Root tokens:        {n_root}  (ROOT_0 .. ROOT_52)")
         print(f"  PV tokens:          {n_pv}  (PV_{self.pitch_offset}_1 .. PV_{self.max_pitch}_{self.num_vel_bins})")
         print(f"  Beats per bar:      {self.beats_per_bar}")
         print("=" * 60)

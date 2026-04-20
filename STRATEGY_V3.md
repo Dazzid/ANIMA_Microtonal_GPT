@@ -5,6 +5,12 @@ Contains: the goal, the data contract, the tokenization spec, the model-input
 plan, the log of decisions and past failures, and the road to follow.
 This document also serves as the paper outline.
 
+> **Current state (2026-04-17, updated live).** Phase A tasks 1–6 complete.
+> Task 7 active: training `modelA_hybrid_v1` with the Large preset
+> (L12, H12, E768, ~110 M params). Launched from terminal — user monitors
+> progress directly. See §9 for the per-task log and §13.2 stage D for the
+> canonical launch command.
+
 ---
 
 ## 1. Mission
@@ -109,35 +115,76 @@ CHORD_START DUR_4.0 P_209 V_3 P_240 V_3 P_262 V_2 P_281 V_3 P_303 V_2 CHORD_END 
 
 ## 4. Level 1 vocabulary (symbolic, from `.txt`)
 
-Canonical source: `src/formats.py`. Reuse `correctStyleTokensInMeta`,
-`getNotes`, `getNatures`, `listToIgnore`, `splitChordTokens`,
-`splitSlashChords`. Do not reinvent these tables.
+Canonical source files: `src/formats.py` (style / structural normalization)
+and `src/convention.py` (53-TET chord naming rules, 104 canonical symbols).
 
-| Group        | Count | Examples                                                    | Source |
-|--------------|------:|-------------------------------------------------------------|--------|
-| Header       | 3     | `<style>`, `<tonality>`, `<type>`                           | literal |
-| Type         | 14    | `TYPE_0_major` … `TYPE_6_neutral_n`                         | folder name |
-| Style        | 16    | `Jazz Blues Folk Bossa Reggae Samba Funk Pop Son Rock Soul Balad RnB Gospel Afoxé "Even 8ths"` | `formats.correctStyleTokensInMeta` |
-| Tonality     | ~24   | `C_major`, `A_minor`, …                                     | sidecar |
-| Form         | 9     | `FORM_INTRO A B C D VERSE HEAD CODA SEGNO`                  | sidecar |
-| Structural   | 4     | `|`, `|:`, `:|`, `BAR`                                      | sidecar |
-| Chord start  | 1     | `.`                                                         | sidecar |
-| Duration (L1)| open  | float literal beats (`4.0`, `2.0`, `0.5`, …)                | sidecar |
-| Root letter  | 20    | from `getNotes()`                                           | sidecar |
-| Quality      | 18    | from `getNatures()` (`maj, maj7, m, m7, dom7, ø7, o7, sus, aug, …`) | sidecar |
-| Extensions   | open  | `b9`, `#11`, `add6`, …                                      | sidecar |
-| Slash bass   | 1+20  | `/` + root letter                                           | sidecar |
+Counts below come from a full scan of all 672,840 sidecars (see
+`dataset/l1_alphabet.json` for the raw histograms and companion
+`scripts/scan_l1_alphabet.py` logic).
 
-Rules:
+| Group        | Count | Values                                                    | Source |
+|--------------|------:|-----------------------------------------------------------|--------|
+| Header       | 3     | `<style>`, `<tonality>`, `<type>`                         | literal |
+| Type         | 14    | `TYPE_0_major` … `TYPE_6_neutral_n`                       | folder name |
+| Style (raw → canonical) | 131 raw → 16 canonical | `Jazz Blues Folk Bossa Reggae Samba Funk Pop Son Rock Soul Balad RnB Gospel Afoxé "Even 8ths"` | `formats.correctStyleTokensInMeta` |
+| Tonality     | ~24   | `C_major`, `A_minor`, …                                   | filename |
+| Form         | 9     | `FORM_INTRO A B C D VERSE HEAD CODA SEGNO`                | sidecar |
+| Structural   | 5     | `.`, `|`, `|:`, `:|`, `/`                                 | sidecar |
+| Duration (L1)| 10    | same grid as L2 `DUR_*` (float literal beats)             | sidecar |
+| Root         | **71**| 53-TET root names incl. microtonal prefixes (see below)   | sidecar |
+| Quality      | **193** + 1 implicit | 53-TET chord qualities (see below); empty string `''` renamed to `maj_implicit` in vocab | sidecar |
+| Extensions   | **16**| joined phrases: `'add 9'`, `'add b9'`, `'alter b5'`, …    | sidecar |
+| Slash bases  | 64    | subset of Root set                                        | sidecar |
+
+### 4.1 Root alphabet (71)
+
+Bare 12-TET letters, `^` / `^^` (up / double-up), `v` / `vv` (down / double-down),
+plus rare `##` / `bb`. Exhaustive list:
+
+```
+A, A##, Abb, B, B#, B##, Bb, Bbb, C, C#, C##, Cb, Cbb,
+D, D#, D##, Dbb, E, E#, E##, Ebb, F, F#, F##, Fb, Fbb,
+G, G#, G##, Gbb,
+^A, ^B, ^Bb, ^C, ^C#, ^D, ^E, ^F, ^F#, ^G, ^G#,
+^^A, ^^B, ^^Bb, ^^C, ^^C#, ^^D, ^^E, ^^Eb, ^^F, ^^F#, ^^G,
+vA, vB, vBb, vC, vC#, vD, vD#, vE, vF, vF#, vG, vG#,
+vvA, vvB, vvC#, vvD#, vvE, vvF#, vvG#
+```
+
+### 4.2 Quality alphabet (193)
+
+Union of `convention.py` (104 canonical triad+7 combinations) and legacy
+12-TET labels surviving in the sidecars (`maj7`, `m7`, `dom7`, `ø7`, `o7`,
+`dim7`, `aug`, `sus4`, `sus7`, `power`, `o`, `m`, `vM`, `Nm`, …) plus
+rare fallback labels `(step34)`, `(step36)`, `(step37)`, `(step38)` and
+`N.C.` (no-chord).
+
+Full list dumped to `dataset/l1_alphabet.json` → `qualities`. The empty
+string `''` (6.47M occurrences = implicit major triad) is stored in the
+vocabulary as the explicit token `maj_implicit`.
+
+### 4.3 Extension alphabet (16, joined phrases)
+
+```
+add 2, add 7, add 9, add 11, add 13, add b6, add b9, add b13,
+add #7, add #9, add #11, alter b5, alter #5, alter #9, alter #11,
+sus7
+```
+
+Each is **one** token with the space preserved.
+
+### Rules
+
 - Style is chosen by the substring rules in `formats.correctStyleTokensInMeta`. **Diversity preserved (16 buckets, not collapsed to 4).**
-- Root in L1 is a **letter**, not a pitch class. 53-TET realization lives in L2.
+- Root in L1 is a 53-TET **name string** (letter + optional `^`/`v` prefix). L2 still carries absolute pitch as `P_<step>`.
 - `BAR` is a plain structural marker. **No numbering.**
+- Quality `'N.C.'` and `(stepNN)` are kept as-is (low frequency). Flagged for Phase B review.
 
 ---
 
 ## 5. Level 2 vocabulary (MIDI/MPE, from `.mid`)
 
-Extracted from `src/tokenizer.py` (current state, vocab_size = 2662):
+Extracted from `src/tokenizer.py` (current state, **vocab_size = 2930**):
 
 | Group       | Count | Values                                                        |
 |-------------|------:|---------------------------------------------------------------|
@@ -153,9 +200,9 @@ CHORD_START  DUR_<d>  P_<step> V_<v>  P_<step> V_<v>  …  CHORD_END
 ```
 Max 8 notes per chord (`MAX_CHORD_NOTES = 8`).
 
-Known stray to remove: `ROOT_<pc>` tokens. Root in L1 is the chord letter;
-L2 carries the 53-TET voicing. `ROOT_*` in the vocab is a leftover of an
-earlier misconception and must be deleted (see §9 Open tasks).
+Known stray — **removed 2026-04-17**: `ROOT_<pc>` tokens (53 of them) have
+been deleted from vocab and encoder. Decoder already ignored them. Vocab
+dropped 2662 → 2609.
 
 Implementation: `MPETokenizer.encode_chords` / `chords_to_midi` in
 `src/tokenizer.py`.
@@ -164,19 +211,25 @@ Implementation: `MPETokenizer.encode_chords` / `chords_to_midi` in
 
 ## 6. EigenSpace — positional embedding, not a token
 
-Each chord has a 4-vector `(α, β, γ, D)` from `src/eigenspace.py`.
+Each chord has a 4-vector `(α, β, γ, D)` from `src/eigenspace.py`
+(`D` = dissonance; previously called `δ` and mis-labeled "Plomp–Levelt").
 It is **not tokenized**.
 
 Pipeline:
-1. Compute per-chord `(α, β, γ, D)` → save as `<stem>.eigen.npy`.
-2. At model input, broadcast the chord vector across every token of its
-   L1+L2 block.
-3. Project `(4 → n_embd)` via a small MLP and **add** to the positional
-   embedding before the transformer.
-
-**Open decision**: whether to broadcast across the whole block or inject
-only at `CHORD_START`. Default chosen for Phase A: broadcast across the
-block. Revisit if form adherence is poor.
+1. Compute per-chord `(α, β, γ, D)` from the **L1 symbolic root** (not
+   `min(pitches)` — slash chords must honour their named bass). Saved as
+   `<stem>.eigen.npy`, shape `(N_chords, 4)` float32.
+2. Expand to per-token via the spans returned by
+   `l1.build_merged_tokens_with_spans` under **Visibility Rule B** (locked):
+   - Header tokens (`<start>`, `STYLE_*`, `TONALITY_*`, `TYPE_*`) → span `-1`
+     → default `[1.0, 1.0, 2.0, 0.0]` = `HEADER_EIGEN`.
+   - L1 chord `k` and L2 chord `k` share span `k` → `eigen_chord[k]`.
+   - Structural markers (`|`, `|:`, `:|`, `FORM_*`) between chord `k-1` and
+     chord `k` carry span `k-1`: **the previous chord's eigenspace persists
+     across the gap; no future leakage.**
+   - `<end>` inherits the last chord; padding uses `HEADER_EIGEN`.
+3. Project `(4 → n_embd)` via `EigenSpacePositionalEncoding` (small MLP)
+   and **add** to the positional embedding before the transformer.
 
 ---
 
@@ -196,6 +249,9 @@ Do not revisit without cause.
   qualities, and structural markers.
 - **Previous 12-TET paper is a reference, not a spec.** Concepts transfer;
   vocabularies do not.
+- **Method B vocabulary = flat compound `H_<step>_<vel>`** (2026-04-20,
+  publication-deadline decision). True-column / multi-hot chord emission
+  deferred to post-deadline. Rationale in §B.1.
 
 ---
 
@@ -211,6 +267,8 @@ Record failures here so future sessions do not repeat them.
 | F4 | `ROOT_<pc_0..52>` invented from MIDI bass | Mixed L1 semantics into L2 | Root is a letter in L1 only; remove `ROOT_*` from vocab |
 | F5 | Agent treated the published 12-TET paper as the current spec | Skipped alignment step | Align on intent before code. Previous paper = reference, not spec |
 | F6 | Earlier drafts wrote strategy as opinionated prose | Wrong register | Strategy is instructional: state decisions, not opinions |
+| F7 | Initial L1 vocab assumed `formats.getNotes()` (20) / `getNatures()` (18) as the alphabet | Those tables describe **12-TET input** to the transformer, not the **53-TET sidecar output** | Scan the actual sidecars. Truth is 71 roots, 193 qualities, 16 ext phrases — pulled from `dataset/l1_alphabet.json` |
+| F8 | `pack_data_v3.py` crashed at the very end of a ~7 min run, leaving stale `meta.json` | Final step cast the 21.6 GB fp16 `train_eigen` to fp32 (~43 GB) just to compute per-dim mean/std — OOM | Stream stats in 8192-seq chunks (two-pass mean/variance in float64). Added `--regen-meta-only` so we don't have to re-pack when only meta is missing. Always free big arrays before downstream reductions |
 
 ---
 
@@ -218,35 +276,264 @@ Record failures here so future sessions do not repeat them.
 
 ### Phase A — Hybrid Symbolic + MIDI/MPE (current)
 
-1. **Tokenizer cleanup**
-   - Remove `ROOT_<pc>` tokens and all code paths that emit them
-   - Confirm vocab size after removal; save `vocab.json`
-2. **L1 parser** — `parse_text_sidecar(path) -> list[Token]`
-   - Reads a `.txt`, yields header tokens once, then per-chord L1 blocks
-     interleaved with structural markers
-3. **L1+L2 interleaver** — `merge_levels(txt_tokens, mid_tokens) -> list[int]`
-   - Aligns by chord index; emits
-     `<start> …header… [L1_block_k, L2_block_k for k in chords]… <end>`
-   - Asserts equal chord counts on both sides; logs and skips on mismatch
-4. **EigenSpace sidecar builder**
-   - For each `<stem>.mid`, compute chord sequence + `(α, β, γ, D)` per chord,
-     save `<stem>.eigen.npy` next to the MIDI
-5. **Model update** (`src/model.py`)
-   - Add `nn.Linear(4, n_embd)` (or small MLP) for EigenSpace
-   - At forward: broadcast chord vector across each chord's token span,
-     project, and add to positional embedding
-6. **Preprocess + pack** (`preprocess.py`, `pack_data.py`)
-   - Write the interleaved stream + aligned EigenSpace tensor to packed bins
-7. **Train Model A** (`train.py`)
-   - Run name: `modelA_hybrid_v1`
-   - Save to `checkpoints/modelA_hybrid_v1/`
-8. **Evaluate Model A** (§10)
+1. **Tokenizer cleanup** ✅ 2026-04-17
+   - `ROOT_<pc>` tokens removed; vocab 2662 → 2609
+   - Encoder no longer emits ROOT; decoder skips legacy ROOT tokens
+2. **L1 parser** ✅ 2026-04-17
+   - `parse_text_sidecar(path) -> L1Parsed` in `src/l1.py`
+   - Header tokens once, then per-chord `ChordEvent` / `StructuralEvent` stream
+   - Uses alphabet frozen in `dataset/l1_alphabet.json`; empty quality → `maj_implicit`
+   - DUR quantization in place; style coverage 99.65 %
+3. **L1+L2 interleaver** ✅ 2026-04-17
+   - `merge_levels(parsed, l2_tokens)` + `build_merged_tokens(midi, txt, tok)` in `src/l1.py`
+   - Aligns by chord index; emits `<start> …header… [L1_k L2_k | structurals]* <end>`
+   - Asserts equal chord counts; raises on mismatch
+   - Validated on 300/300 paired songs
+4. **EigenSpace sidecar builder** ✅ 2026-04-17
+   - `src/eigen_sidecar.py` + parallel CLI `src/build_eigen_sidecars.py`
+   - Per chord computes `(α, β, γ, D)` from L1 symbolic root (root-invariant;
+     slash chords use named root, not `min(pitches)`)
+   - `classify_intervals` rewritten to return a 3-tuple (α, β, γ); dissonance D
+     comes from `DissonanceMap` lookup (renamed from the Plomp–Levelt misnomer)
+   - Full sweep: **672,518 / 672,840 = 99.95 %** `.eigen.npy` files written
+     in 7.3 min @ 1 540 files/s
+   - The 322 failures cluster in 23 base songs × 14 key transpositions — all
+     L1/L2 chord-count mismatches from an upstream XML generator bug.
+     **Decision: skip these songs; no further investigation for Phase A.**
+   - Total: 84 969 402 chord rows on disk
+5. **Model update** ✅ 2026-04-17
+   - `EigenSpacePositionalEncoding` MLP in `src/model.py`
+   - 4-D chord vector projected and summed into the positional embedding
+   - `vocab_size = 2930`, `block_size = 4096`, `n_eigen = 4` (α, β, γ, D)
+   - Forward + loss smoke-tested on packed tensors
+6. **Preprocess + pack v3** ✅ 2026-04-17
+   - Old two-stage pipeline (MIDI → per-song JSON → .bin) retired
+   - New single-stage packer: `src/pack_data_v3.py` takes paired
+     `(.mid, .txt, .eigen.npy)` directly to `train_tokens.bin` / `train_eigen.bin`
+   - `merge_levels_with_spans()` / `build_merged_tokens_with_spans()` in
+     `src/l1.py` returns `(tokens, chord_spans)` under **Visibility Rule B**
+   - Outputs `uint16` tokens + `float16` eigen at `dataset/tokenized/`,
+     plus `meta.json` (per-dim eigenspace stats over train split) and `vocab.json`
+   - **Full dataset packed** from 674 366 paired songs:
+     - train: 660 870 seqs × 4097 tokens = 2.71 B train tokens
+     - val:    13 496 seqs × 4097 tokens = 55.3 M val tokens
+     - vocab_size = **2930**, block_size = **4096**
+     - on-disk: 5.4 GB train_tokens, 21.6 GB train_eigen, 110 MB val_tokens, 442 MB val_eigen
+   - **Eigenspace z-score stats (train split)** — use these at model input:
+     - α: mean 1.0946, std 0.1184
+     - β: mean 1.1995, std 0.2430
+     - γ: mean 1.8771, std 0.1774
+     - D: mean 5.6368, std 6.9195   ← much larger scale than α/β/γ; **must** z-score
+   - **Fix (2026-04-17)**: original packer OOM-crashed at the final
+     `train_eigen.astype(float32)` step (~43 GB alloc). Replaced with
+     `_eigen_stats_streaming()` (8192-seq chunks, two-pass mean/variance
+     in float64) and a `--regen-meta-only` flag for rebuilding `meta.json`
+     from existing bins without re-packing. See F8 in §8.
+7. **Train Model A** ✅ 2026-04-20
+   - Run name: `modelA_hybrid_v1`; checkpoints at `checkpoints/modelA_hybrid_v1/`
+   - **Preset used: Large (GPT-2-small class, ~90.5 M params)**
+     - `n_layer=12`, `n_head=12`, `n_embd=768`, `block_size=4096`,
+       `n_eigen=4`, `eigen_hidden=128`, `use_sequential_pos=True`
+     - batch 8 × grad-accum 8 = effective batch 64; 524 288 tokens/iter
+   - **Completed at iter 49 500 / 50 000**, `best.pt` with
+     `best_val_loss = 0.2600`. Checkpoint loads and generates coherent
+     L1+L2 streams end-to-end; see `src/10_generate_midi_v2_fresh.ipynb`
+     (V3-aware generator, validated 2026-04-20: 208 tok/s, 76 chords /
+     1024 tokens, 20 unique eigen vectors at `CHORD_START`, MIDI export OK).
+   - Canonical launch command lives in §13.2 stage D.
+8. **Evaluate Model A** (§10) — pending. Metrics: form adherence,
+   symbol↔voicing consistency, style/type conditioning response, novelty
+   vs memorization.
 
-### Phase B — Hybrid Symbolic + 53-TET column
+### Phase B — Symbolic 53-TET GPT + deterministic MIDI translator
 
-Only start after A is evaluated. Reuse L1. Replace L2 with a full 53-TET
-holdrian-column representation (design TBD, to be specified here when
-Phase A is complete). Translator to MIDI runs after generation.
+**Goal.** Compare Model A (hybrid L1 + MIDI/MPE L2) against a second model
+that generates a **pure symbolic 53-TET stream** and converts to MIDI only
+*after* generation. This isolates the benefit of learning voicings in a
+microtonality-native vocabulary instead of as MIDI pitch events.
+
+**Isolation rule.** Phase B introduces **new modules with the `_b` suffix**.
+It must not modify, overwrite or reuse in-place any Model A production file
+listed in §11. Model A must stay reproducible from its existing modules
+alone.
+
+#### B.0 Isolation contract (hard rules, binding)
+
+The primary risk in Phase B is accidentally breaking Model A. The
+following rules are non-negotiable; any deviation requires an explicit
+decision entry in §7.
+
+**Files that are FROZEN for Phase B — never edited, never renamed:**
+
+- **Code (`src/`):** `tokenizer.py`, `pack_data_v3.py`, `pack_data.py`,
+  `generate.py`, `train.py`, `trainer.py`, `model.py`, `preprocess.py`,
+  `preprocess_runner.py`, `configurator.py`, `l1.py`, `eigen_sidecar.py`,
+  `build_eigen_sidecars.py`, `eigenspace.py`, `formats.py`, `voicing.py`,
+  `chord_mapping.py`, `convention.py`, `transposition.py`,
+  `xmlTranslator.py`, `generate_53tet_dataset.py`, `midi_viz.py`,
+  `play_mpe.py`, `utils.py`, `mingpt_utils.py`,
+  `10_generate_midi_v2_fresh.ipynb`.
+- **Artifacts:** `dataset/tokenized/` (all `*.bin` + `meta.json` +
+  `vocab.json`), `dataset/l1_alphabet.json`, `dataset/text_files/`,
+  `dataset/midi_files/`, every `.eigen.npy` sidecar,
+  `checkpoints/modelA_hybrid_v1/`, `checkpoints/best.pt`,
+  `checkpoints/final.pt`, `checkpoints/latest.pt`.
+
+**Rules:**
+
+1. **New code only in new files** with the `_b` suffix (or new
+   directories). No edits to any file listed above.
+2. **No in-place edits to shared modules.** If Phase B needs a behaviour
+   change in `eigenspace.py`, `chord_mapping.py`, `convention.py`,
+   `formats.py`, `l1.py`, etc., we **copy** the needed function into a
+   Phase-B module and modify the copy — the original stays untouched.
+   Read-only `import …` of existing modules is fine.
+3. **Separate output trees.** Phase B writes only to
+   `dataset/tokenized_b/` and `checkpoints/modelB_column_v1/`. Never to
+   `dataset/tokenized/` or to existing checkpoint dirs.
+4. **Reuse `.eigen.npy` sidecars read-only.** Phase B consumes them,
+   never rewrites them.
+5. **Reuse the paired twin-tree (`.mid` + `.txt`) read-only.** No
+   re-generation of the dataset in Phase B.
+6. **No monkey-patching of Method A classes.** `tokenizer_b.py` is a
+   *new* class, not a subclass that overrides methods on `MPETokenizer`.
+7. **Git discipline.** Every Phase-B commit touches only `*_b.*` files,
+   new notebooks starting with `12_`, `dataset/tokenized_b/`,
+   `checkpoints/modelB_column_v1/`, or this strategy document. Anything
+   outside that set → stop and ask.
+8. **Regression gate before any Phase-B merge.** Re-run
+   `src/10_generate_midi_v2_fresh.ipynb` end-to-end and confirm Model A
+   behaviour is unchanged: `vocab_size = 2930`,
+   `best_val_loss = 0.2600`, successful MIDI export, same
+   order-of-magnitude generation speed. If any Method A number drifts →
+   the Phase-B change is reverted.
+9. **Append-only strategy doc.** Phase B edits only add to §9 Phase B
+   and (when needed) a new §5-bis "Level 2 — 53-TET column" section.
+   §4, §5, §6, §7, §8 (Method A spec + decision log + failure log) are
+   append-only.
+
+#### B.1 Representation — "53-TET column" (LOCKED 2026-04-20)
+
+**Decision (publication deadline).** Option (i) — **flat holdrian stream**
+with a compound pitch+velocity token. Architecture, block size, chord-block
+protocol, and total vocabulary count stay **identical to Method A** so the
+A↔B comparison isolates exactly one variable: the *interpretation* of the
+pitch token (MIDI-derived `PV_` vs pure holdrian `H_`). True-column /
+multi-hot chord emission (option ii) is deferred to a post-deadline phase.
+
+**Per-chord block (same shape as Method A):**
+
+```
+CHORD_START  DUR_<d>  H_<step>_<vel>  H_<step>_<vel>  …  CHORD_END
+```
+
+- `H_<step>_<vel>` — compound **holdrian comma + velocity bin**.
+  - `step` ∈ `[PITCH_OFFSET_B .. MAX_53TET_STEP_B] = [106 .. 424]` (319
+    values), **absolute 53-EDO step index**, octave-agnostic in naming.
+  - `vel` ∈ `[1..8]` (8 bins), same grid as Method A `V_<v>`.
+  - Total H_ tokens: `319 × 8 = 2552`.
+- `H_` is **not** a MIDI derivative. The paper claim: the vocabulary has
+  **zero MIDI semantics**; generation emits a pure 53-EDO symbolic stream;
+  MIDI only appears at inference time via the deterministic translator
+  `src/holdrian_to_midi.py` (task B-4).
+- Notes inside a chord are ordered **low → high by `step`**, same as A.
+- `MAX_CHORD_NOTES = 8` unchanged. `DUR_*` grid unchanged.
+- L1 block (`. DUR R_ Q_ X_ /`), `CHORD_START`, `CHORD_END`, `BAR`,
+  `REST`, `TYPE_*`, `STYLE_*`, `TONALITY_*`, `FORM_*`, specials: all
+  **reused unchanged** from Method A via `l1.load_alphabet()`.
+- EigenSpace `(α, β, γ, D)` reused **unchanged** — same MLP, same
+  Visibility Rule B, same `.eigen.npy` sidecars. `eigenspace.py` already
+  operates on 53-EDO step integers; no change needed.
+
+**Final vocabulary count (Method B):**
+
+| Group       | Count | Notes                                                      |
+|-------------|------:|------------------------------------------------------------|
+| Special     | 4     | `<pad> <start> <end> <sep>`                                |
+| Structural  | 4     | `CHORD_START CHORD_END BAR REST`                           |
+| Duration    | 10    | `DUR_*` (same grid as A)                                   |
+| Type        | 14    | `TYPE_*` (reused)                                          |
+| Style       | 16    | `STYLE_*` (reused)                                         |
+| Form        | 9     | `FORM_*` (reused)                                          |
+| Holdrian+Vel| 2552  | `H_<step>_<vel>` — **replaces** A's `PV_<step>_<vel>`      |
+| L1 (via `l1.load_alphabet`) | ~321 | R_, Q_, X_, TONALITY_, L1 structural (`.`, `|`, `|:`, `:|`, `/`) |
+| **Total**   | **~2930** | **Matches Method A so `model.py` loads with no change.** |
+
+The exact total is whatever `tokenizer_b.TokenizerB._build_vocab` emits and
+is written to `dataset/tokenized_b/vocab.json` at pack time. The target is
+to land at the same `vocab_size = 2930` as Method A; any drift is recorded
+here and does not break the isolation contract (B.0) since Method A's own
+`vocab.json` stays untouched.
+
+**Why this shape (and not a 3-way `H_<step>_<oct>_<vel>` or a multi-hot
+column):**
+
+1. Same seq-length budget as A → identical `block_size = 4096` →
+   apples-to-apples val-loss comparison.
+2. Same AR softmax head → reuse `model.py` verbatim (isolation contract
+   rule 1, 2, 6).
+3. `step` is **already** absolute across octaves (range 106..424 spans
+   octaves 2..8). Octave information is implicit in the integer.
+   Splitting it out adds tokens without adding expressiveness.
+4. Multi-hot / true-column (option ii) requires a new loss head and a new
+   EigenSpace expansion, violating the deadline constraint and diluting
+   the research claim. Scheduled for post-deadline follow-up.
+
+#### B.2 Post-hoc MIDI translator
+
+A deterministic function `holdrian_to_mpe_midi(tokens, path)` takes the
+generated stream and writes MPE MIDI using the same RPN pitch-bend setup
+as `tokenizer.chords_to_midi`. No learning at this step — only
+`step,oct → (nearest MIDI note, bend)` using the existing 53-EDO tables
+in `chord_mapping.py` / `convention.py`.
+
+#### B.3 New files (no collision with Model A)
+
+| New file                         | Role                                                         |
+|----------------------------------|--------------------------------------------------------------|
+| `src/tokenizer_b.py`             | 53-TET symbolic tokenizer (H_ tokens, L1 reused)             |
+| `src/pack_data_b.py`             | Packs `(.mid, .txt, .eigen.npy)` → `dataset/tokenized_b/*`   |
+| `src/holdrian_to_midi.py`        | Deterministic 53-TET-column → MPE MIDI translator            |
+| `src/generate_b.py`              | Inference entry for Model B (mirrors `generate.py`)          |
+| `src/train_b.py`                 | Training entry for Model B (mirrors `train.py`)              |
+| `src/12_generate_modelB.ipynb`   | Generation notebook for Model B, validated end-to-end        |
+| `dataset/tokenized_b/`           | Packed bins + `meta.json` + `vocab.json` for Model B         |
+| `checkpoints/modelB_column_v1/`  | Checkpoints for Model B                                      |
+
+Model A modules (`tokenizer.py`, `pack_data_v3.py`, `generate.py`,
+`train.py`, `model.py`) are **imported as-is where possible** (e.g.
+`model.py` already parameterises `vocab_size`; no fork needed) and
+**never edited** during Phase B.
+
+Shared, read-only dependencies: `formats.py`, `l1.py`, `eigenspace.py`,
+`eigen_sidecar.py`, `chord_mapping.py`, `convention.py`, `voicing.py`,
+`transposition.py`, `generate_53tet_dataset.py`.
+
+#### B.4 Task list
+
+1. **B-1 Freeze the 53-TET column vocabulary.** ✅ 2026-04-20 — locked
+   to flat compound `H_<step>_<vel>` (see §B.1). Implement
+   `src/tokenizer_b.py` with encode/decode + round-trip test on 100 songs.
+2. **B-2 Port the packer.** Write `pack_data_b.py` (copy of
+   `pack_data_v3.py` re-targeted to `tokenizer_b`). Produce
+   `dataset/tokenized_b/{train,val}_{tokens,eigen}.bin`, `meta.json`,
+   `vocab.json`. EigenSpace reuses the existing `.eigen.npy` sidecars
+   unchanged.
+3. **B-3 Train `modelB_column_v1`.** Same preset as Model A
+   (L12 H12 E768, block_size 4096, effective batch 64, 50 k iters) for a
+   clean A↔B comparison.
+4. **B-4 Translator.** Implement `holdrian_to_midi.py` and verify
+   round-trip on a 100-song sample of the training data: pack → decode →
+   translate → re-parse the resulting MIDI → pitch-class histogram
+   matches original to within rounding.
+5. **B-5 Generation notebook.** `src/12_generate_modelB.ipynb`, same
+   conditioning UX as notebook 10 but using `generate_b.py` + the
+   translator. Must produce audible MPE MIDI.
+6. **B-6 Evaluate Model B** against the metrics in §10, on **the same
+   prompts** used for Model A.
+7. **B-7 A vs B comparison.** Same prompts, same seeds where possible.
+   Report: val-loss, form adherence, symbol↔voicing consistency,
+   microtonal pitch-class entropy per `TYPE_*`, novelty vs training.
 
 ### Phase C — Cleanup
 
@@ -587,11 +874,12 @@ Tokenization correctness:
 - [x] Conditioning context at generation: type + style + first chord
 
 Engineering:
-- [ ] Remove stray `ROOT_<pc>` tokens from `tokenizer.py` (use L1 letter)
-- [ ] Implement `parse_text_sidecar()` for L1
-- [ ] Implement `merge_levels()` to interleave L1+L2 by chord index
-- [ ] Compute `.eigen.npy` sidecars per file
-- [ ] Add EigenSpace MLP to `model.py` and sum into positional embedding
+- [x] Remove stray `ROOT_<pc>` tokens from `tokenizer.py` (use L1 letter)
+- [x] Implement `parse_text_sidecar()` for L1
+- [x] Implement `merge_levels()` to interleave L1+L2 by chord index
+- [x] Compute `.eigen.npy` sidecars per file (672 518 / 672 840 = 99.95 %)
+- [x] Add EigenSpace MLP to `model.py` and sum into positional embedding
+- [x] Pack v3 — `pack_data_v3.py` with Visibility Rule B spans (2.71 B train tokens, 660 870 seqs)
 - [ ] Training run `modelA_hybrid_v1`
 - [ ] Evaluation: form adherence, voicing plausibility, style match
 - [ ] Begin Model B (53-TET holdrian column L2)
@@ -623,3 +911,90 @@ Engineering:
 The earlier chord-as-column draft is preserved at
 `STRATEGY_V3_original_column_draft.md`. It informs Phase B and should not be
 edited as part of Phase A work.
+
+---
+
+## 13. Reproduce / resume
+
+A fresh session (or a fresh machine) can pick up work by running these
+stages in order. Each stage is idempotent; re-running it simply overwrites.
+
+### 13.1 Environment
+
+- conda env: **`anima`** — python at
+  `/home/david/miniconda3/envs/anima/bin/python`.
+- Run all scripts from `src/` (imports assume the src dir is on `sys.path`;
+  the scripts add it automatically).
+
+### 13.2 Stage map
+
+| # | Stage                     | Script                               | Output                                                                                       | Typical time |
+|---|---------------------------|--------------------------------------|----------------------------------------------------------------------------------------------|--------------|
+| A | Build paired dataset      | `src/generate_53tet_dataset.py --workers 8` | `dataset/midi_files/53_tet_mpe/**/*.mid` + `dataset/text_files/53_tet_mpe/**/*.txt`          | hours        |
+| B | Build EigenSpace sidecars | `src/build_eigen_sidecars.py --workers 12` | `<stem>.eigen.npy` next to every `.mid` (99.95 % coverage; 322 skipped)                      | ~7 min       |
+| C | Pack tokens + eigen       | `src/pack_data_v3.py --workers 24`   | `dataset/tokenized/{train,val}_{tokens,eigen}.bin`, `meta.json`, `vocab.json`                | ~7 min       |
+| D | Train Model A             | `src/train.py` (run: `modelA_hybrid_v1`) | `checkpoints/modelA_hybrid_v1/{latest,best,final}.pt`                                        | hours–days   |
+
+Canonical launch command for stage D (Large / GPT-2-small preset, chosen
+2026-04-17; see §9 task 7 for rationale):
+
+```bash
+cd src/
+python train.py \
+    --n-layer 12 --n-head 12 --n-embd 768 \
+    --batch-size 8 --grad-accum 8 \
+    --max-iters 50000 \
+    --warmup-iters 2000 \
+    --eval-interval 500 \
+    --save-interval 2000 \
+    --checkpoint-dir ../checkpoints/modelA_hybrid_v1 \
+    --wandb-run-name modelA_hybrid_v1
+```
+
+Note: `--lr-decay-iters` defaults to `--max-iters` when omitted, so the
+cosine schedule automatically contracts to match the shorter run.
+
+If the 32 GB RTX 5090 OOMs at these shapes, halve the live batch and
+double accumulation — `--batch-size 4 --grad-accum 16` keeps the effective
+batch identical (64) at half the activation memory.
+
+The 322 songs that fail the L1/L2 chord-count invariant in stage B are
+**auto-skipped** at stage C (no `.eigen.npy` → not packed). This is the
+locked policy for Phase A.
+
+### 13.3 Packed-bin data contract (stage C output)
+
+In `dataset/tokenized/`:
+
+- `train_tokens.bin` — `np.uint16`, shape `(N_train_seqs, block_size + 1)`.
+- `train_eigen.bin`  — `np.float16`, shape `(N_train_seqs, block_size + 1, 4)`.
+- `val_tokens.bin` / `val_eigen.bin` — same layout, validation split.
+- Pad id is **0**; padded positions carry `HEADER_EIGEN = [1.0, 1.0, 2.0, 0.0]`.
+- `meta.json` — `vocab_size`, `block_size`, `seq_len`, song and sequence
+  counts, per-dim eigenspace (mean, std) over the **training set**, and the
+  exact split seed.
+- `vocab.json` — authoritative token ↔ id mapping (written by
+  `MPETokenizer.save_vocab`); always load it before training / generation.
+
+Training loads the four `.bin` files with `np.memmap`, slices `[:-1]` for
+inputs and `[1:]` for targets, and feeds eigen as `float32` into
+`GPT2.forward(..., eigen=eigen)`.
+
+### 13.4 Known artifacts to trust
+
+- `src/l1.py` — `parse_text_sidecar`, `merge_levels`, `build_merged_tokens`,
+  `merge_levels_with_spans`, `build_merged_tokens_with_spans`.
+- `src/eigen_sidecar.py` — per-song `(α, β, γ, D)` builder.
+- `src/eigenspace.py` — `classify_intervals` returns a 3-tuple (root-invariant);
+  `DissonanceMap.lookup` returns `D`.
+- `src/tokenizer.py` — vocab 2930, no `ROOT_*` tokens.
+- `src/model.py` — `ModelConfig(vocab_size=2930, block_size=4096, n_eigen=4)`,
+  `EigenSpacePositionalEncoding`.
+- `src/pack_data_v3.py` — the only supported packer. Old `preprocess.py` /
+  `pack_data.py` are retired (kept for reference until Phase C cleanup).
+
+### 13.5 If a stage is interrupted
+
+Stages B and C both re-scan the filesystem on every run and overwrite;
+safe to rerun from scratch. Stage D resumes from
+`checkpoints/modelA_hybrid_v1/latest.pt` if present.
