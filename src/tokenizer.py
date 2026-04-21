@@ -560,6 +560,14 @@ def parse_mpe_midi(midi_path, speed=1.0):
             ]
         })
     
+    # Clip each chord's duration so it never exceeds the gap to the next
+    # chord onset.  Source MIDIs sometimes have note-off times that extend
+    # past the next chord, causing notes to bleed across chord boundaries.
+    for i in range(len(chords) - 1):
+        gap = chords[i + 1]['onset_beats'] - chords[i]['onset_beats']
+        if gap > 0 and chords[i]['duration_beats'] > gap:
+            chords[i]['duration_beats'] = round(gap, 4)
+    
     return chords
 
 

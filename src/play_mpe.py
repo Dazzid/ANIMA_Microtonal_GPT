@@ -192,6 +192,27 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
     if capped:
         print(f"  Capped {capped} note(s) to {max_note_dur}s max duration")
 
+    # Hard-clip each note to the gap before the next chord onset.
+    # Missing or late note_off messages cause notes to ring across chord
+    # boundaries producing cluster-like noise.  Since all chords share the
+    # same onset grid we can safely clip every note's duration to
+    # (next_distinct_onset - this_onset) so notes stop exactly when the
+    # next chord begins.
+    onsets = sorted({t for t, _, _, _ in note_events})
+    onset_to_next = {t: onsets[i + 1] for i, t in enumerate(onsets[:-1])}
+    clipped_overlap = 0
+    hard_clipped = []
+    for start, dur, freq, vel in note_events:
+        if start in onset_to_next:
+            max_dur = onset_to_next[start] - start
+            if dur > max_dur:
+                dur = max_dur
+                clipped_overlap += 1
+        hard_clipped.append((start, dur, freq, vel))
+    note_events = hard_clipped
+    if clipped_overlap:
+        print(f"  Hard-clipped {clipped_overlap} note(s) to chord boundary")
+
     # --- ADSR Configuration (Dynamic — computed per note from its duration) ---
     # Fixed release tail budget: at most 25% of note duration, capped at 0.4s, min 0.05s.
     # Attack: 5% of duration, capped at 0.08s.
@@ -294,12 +315,14 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
             # Pure sine wave
             osc = np.sin(p)
         elif waveform == 'triangle':
-            # Band-limited triangle via Fourier series.
-            # Odd harmonics only, amplitude 1/n^2, alternating sign.
+            # Bright triangle — odd harmonics with 1/n^1.4 rolloff.
+            # Standard triangle uses 1/n^2 which is very dark/opaque;
+            # 1/n^1.4 sits between triangle (2) and square (1), adding
+            # presence without the harshness of a full square wave.
             max_n = max(1, int((sample_rate * 0.45) / max(freq, 1.0)))
             osc = np.zeros_like(p)
             for n in range(1, max_n + 1, 2):  # 1, 3, 5, ...
-                osc += ((-1) ** ((n - 1) // 2)) * np.sin(n * p) / (n ** 2)
+                osc += ((-1) ** ((n - 1) // 2)) * np.sin(n * p) / (n ** 1.4)
             osc *= 8 / (np.pi ** 2)
         elif waveform == 'square':
             # Band-limited square via Fourier series.
@@ -314,9 +337,9 @@ def render_mpe_to_audio_data(midi_path, sample_rate=44100, speed=1.2, waveform='
         elif waveform == 'sawtooth':
             # Band-limited sawtooth via Fourier series.
             # All harmonics (even + odd), amplitude 1/n, alternating sign.
-            # Include as many harmonics as fit below Nyquist to get the
-            # characteristic bright/buzzy timbre without aliasing.
-            max_n = max(1, int((sample_rate * 0.45) / max(freq, 1.0)))
+            # Cap at 0.20 × Nyquist (~4.4 kHz at 44.1 kHz SR) to tame the
+            # harsh high-frequency energy that makes chords sound shrill.
+            max_n = max(1, int((sample_rate * 0.20) / max(freq, 1.0)))
             osc = np.zeros_like(p)
             for n in range(1, max_n + 1):
                 osc += ((-1) ** (n + 1)) * np.sin(n * p) / n
