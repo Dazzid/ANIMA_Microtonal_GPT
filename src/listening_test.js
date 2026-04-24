@@ -4,7 +4,7 @@
    24 audio clips = 8 dataset + 8 model_A + 8 model_B,
    spanning 4 styles (jazz, blues, bossa, rock) x 8 chord
    transformations.  Each clip is rated on four Likert-1..10
-   scales: Harmony, Plausibility, Dissonance, Novelty.
+   scales: Harmony, Musicality, Dissonance, Novelty.
    ------------------------------------------------------------
    Drop this file into cognition.run together with the 24 .mp3
    clips (flat, no sub-folders), mtg_logo.png, and the white
@@ -31,29 +31,29 @@ var opt_scale = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
    not matter – we shuffle before use.
    ------------------------------------------------------------ */
 var all_audio_samples = [
-    "01_dataset_01_Autumn_Leaves__jazz__type_0_major.mp3",
+    "01_dataset_01_Autumn_Leaves__jazz__type_4_upmajor.mp3",
     "02_dataset_02_Misty__jazz__type_5_minor.mp3",
     "03_dataset_03_Crossroads__blues__type_2_subminor.mp3",
     "04_dataset_04_Bessies_Blues__blues__type_6_neutral_n.mp3",
     "05_dataset_05_Wave__bossa__type_1_neutral.mp3",
     "06_dataset_06_So_Tinha_De_Ser_Com_Voce__bossa__type_3_major.mp3",
-    "07_dataset_07_Something__rock__type_5_major_v2.mp3",
-    "08_dataset_08_Fix_You__rock__type_4_minor.mp3",
-    "09_model_A_01_jazz__type_0_major.mp3",
+    "07_dataset_07_I_Cant_Help_It__rock__type_5_major_v2.mp3",
+    "08_dataset_08_Rock_With_You__rock__type_4_minor.mp3",
+    "09_model_A_01_jazz__type_5_major_v2.mp3",
     "10_model_A_02_jazz__type_5_minor.mp3",
     "11_model_A_03_blues__type_2_subminor.mp3",
     "12_model_A_04_blues__type_6_neutral_n.mp3",
     "13_model_A_05_bossa__type_1_neutral.mp3",
     "14_model_A_06_bossa__type_3_major.mp3",
-    "15_model_A_07_rock__type_5_major_v2.mp3",
+    "15_model_A_07_rock__type_4_upmajor.mp3",
     "16_model_A_08_rock__type_4_minor.mp3",
-    "17_model_B_01_jazz__type_0_major.mp3",
+    "17_model_B_01_jazz__type_5_major_v2.mp3",
     "18_model_B_02_jazz__type_5_minor.mp3",
     "19_model_B_03_blues__type_2_subminor.mp3",
     "20_model_B_04_blues__type_6_neutral_n.mp3",
     "21_model_B_05_bossa__type_1_neutral.mp3",
     "22_model_B_06_bossa__type_3_major.mp3",
-    "23_model_B_07_rock__type_5_major_v2.mp3",
+    "23_model_B_07_rock__type_4_upmajor.mp3",
     "24_model_B_08_rock__type_4_minor.mp3"
 ];
 
@@ -394,8 +394,9 @@ var instructions = {
     stimulus: `<div style="text-align: left; max-width: 640px; margin: 0 auto;">
                  <p style="font-size: 26px; text-align: center; margin-bottom: 20px;">Listening task</p>
                  <p style="font-size: 16px; line-height: 1.7;">
-                   You will hear <strong>24 short microtonal chord progressions</strong>.
-                   These are not songs or melodies, but harmonic trajectories through microtonal space.
+                   You will hear <strong>24 short microtonal chord progressions</strong>,
+                   each <strong>16 bars long</strong>. These are not songs or melodies,
+                   but harmonic trajectories through microtonal space.
                  </p>
                  <p style="font-size: 16px; line-height: 1.7;">
                    For each progression you will rate the <strong>same four perceptual qualities</strong>
@@ -404,7 +405,7 @@ var instructions = {
                  </p>
                  <p style="font-size: 16px; line-height: 1.7; background: #fff8e1; border-left: 4px solid #ffaa00; padding: 12px 16px; border-radius: 6px;">
                    <strong>Important:</strong> some individual chords may sound unusual or unfamiliar
-                   to your ear &mdash; this is expected, as the music uses a microtonal tuning system.
+                   to your ear &mdash; this is expected, as the audio samples use a microtonal tuning system.
                    Please <strong>rate the progression as a whole</strong>, not a single chord in isolation.
                    Try to listen to the overall harmonic motion and the "big picture" rather than
                    penalising a clip because one chord sounded strange.
@@ -434,7 +435,7 @@ function createTrial(i) {
     var questions = [
         { key: 'harmony',      label: 'Harmony',      title: 'How coherent do you find the harmonic motion?',
           lo: 'Not coherent at all', hi: 'Very coherent',   cls: 'harmony' },
-        { key: 'plausibility', label: 'Plausibility', title: 'How plausible is this chord progression for a potential song?',
+        { key: 'plausibility', label: 'Musicality', title: 'How plausible is this chord progression for a potential song?',
           lo: 'Not plausible',       hi: 'Very plausible',  cls: 'plausibility' },
         { key: 'dissonance',   label: 'Dissonance',   title: 'How dissonant is this chord progression?',
           lo: 'Very consonant',      hi: 'Very dissonant',  cls: 'dissonance' },
