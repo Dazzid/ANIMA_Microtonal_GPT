@@ -246,8 +246,22 @@ var jsPsych = initJsPsych({
     }
 });
 
-var shuffledClips = jsPsych.randomization.shuffle(clipEntries);
-console.log("Shuffled clip order:", shuffledClips);
+/* Fully random playback of all 24 clips.
+   Explicit Fisher-Yates shuffle over the combined pool (dataset + model_A +
+   model_B) so presentation order is decoupled from source grouping. */
+function fisherYatesShuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+    }
+    return a;
+}
+var shuffledClips = fisherYatesShuffle(clipEntries);
+console.log("Shuffled clip order (all 24, random, sources interleaved):");
+console.log(shuffledClips.map(function (c, i) {
+    return (i + 1) + '. ' + c.source + '  ' + c.style + '  ' + c.type;
+}).join('\n'));
 
 /* ============================================================
    1. CONSENT
@@ -275,7 +289,7 @@ var consentTrial = {
 
             <p style="font-size: 16px;">You have been invited to take part in a listening study focused on <strong>microtonal chord progressions</strong>.
               <br><strong>The following questionnaire is only compatible with Google Chrome and Safari.</strong>
-              <br>The study lasts about 12 minutes. This study is part of a research project funded by MSCA European Union, Grant Agreement ID: 101203318.
+              <br>The study lasts about 20 minutes. This study is part of a research project funded by MSCA European Union, Grant Agreement ID: 101203318.
             </p>
 
             <p style="font-size: 20px;">Read the following information carefully before proceeding.</p>
