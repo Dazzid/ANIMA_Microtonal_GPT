@@ -27,7 +27,8 @@
 \usepackage{microtype}      % microtypography
 \usepackage{graphicx}       % figures
 \usepackage{cleveref}       % automatic figure references
-
+\usepackage{placeins}
+\usepackage{float}
 
 \hyphenation{% Add custom hyphenations here, separated by space or newline
   hy-phe-na-tion
@@ -133,15 +134,14 @@ Microtonal composition has a sustained computational history. \citet{anders2010c
 
 In 12-TET, intervals such as the third or seventh of a chord are classified as either major or minor. In 53-TET, the smallest step is a holdrian-comma, and each of these intervals admits finer gradations forming a spectrum of qualities principally named subminor, minor, neutral, major, and supermajor. These conventions are borrowed from 31-TET, which is closely related to 53-TET; in 53-TET, each of the five qualities admits further variants (e.g., downminor, upmajor), producing ten gradations of the third and ten of the seventh. The naming convention used throughout this paper classifies each chord interval into a semantic category based on its holdrian-comma step count, then combines abbreviations for the third, fifth, and seventh to produce the chord symbol.
 
-\subsection{Chord symbol construction}
 
 Each chord symbol combines a triad prefix (from the third), a fifth suffix, and a seventh suffix. The triad prefix encodes the third quality: major is implicit, minor is \texttt{m}, and microtonal gradations use abbreviations such as \texttt{sm} (subminor), \texttt{vm} (downminor), \texttt{N} (neutral), \texttt{vM} (downmajor), \texttt{\^{}M} (upmajor), and \texttt{S\^{}} (supermajor). The fifth is empty when perfect; non-standard fifths append \texttt{dim}, \texttt{+}. The seventh follows the same gradation.
 
 \Cref{tab:chord_examples} shows the full $10 \times 10$ grid of 100 seventh chords produced by combining ten third qualities (rows) with ten seventh qualities (columns), all with a perfect fifth at step 31. The diagonal entries (\texttt{SMSM7}, \texttt{\^{}M\^{}M7}, \texttt{maj7}, \texttt{vMvM7}, \texttt{NN7}, \texttt{nn7}, \texttt{\^{}m\^{}m7}, \texttt{m7}, \texttt{vmvm7}, \texttt{smsm7}) are the chords where third and seventh share the same gradation. Of these, only three (\texttt{maj7}, \texttt{m7}, and the dominant \texttt{7} at row M, column m) correspond to standard 12-TET qualities. The remaining 97 entries exist only in 53-TET.
 
-\begin{table*}[hbt!]
+\begin{table*}[]
 \centering
-\footnotesize
+\small
 \caption{53-TET main grid: 100 seventh chords with perfect fifth (step 31). Rows are third qualities, columns are seventh qualities. The symbol is assembled as \texttt{\{third prefix\}\{seventh suffix\}}. Three cells correspond to standard 12-TET chords (maj7, 7, m7); the rest are microtonal.}
 \label{tab:chord_examples}
 \begin{tabular}{c|cccccccccc}
@@ -162,7 +162,7 @@ sm  & smSM7  & sm\^{}M7  & smmaj7  & smvM7  & smN7  & smn7  & sm\^{}m7  & smm7  
 \end{tabular}
 \end{table*}
 
-Root names follow the same comma-level logic. Standard note letters with conventional accidentals (\texttt{\#}, \texttt{b}) are extended with microtonal prefixes: \texttt{\^{}} and \texttt{\^{}\^{}} raise the pitch by one or two holdrian-commas, \texttt{v} and \texttt{vv} lower it by the same amounts. A chord symbol such as \texttt{\^{}C\,vMvM7} denotes a downmajor seventh chord rooted one holdrian-comma above C.
+Root names follow the same comma-level logic. Standard note letters with conventional accidentals (\texttt{\#}, \texttt{b}) are extended with microtonal prefixes: \texttt{\^{}} and \texttt{\^{}\^{}} raise the pitch respectively by one or two holdrian-commas, \texttt{v} and \texttt{vv} lower it by the same amounts. For instance, A chord symbol such as \texttt{\^{}C\,vMvM7} denotes a downmajor seventh chord rooted one holdrian-comma above C.
 
 
 
@@ -179,7 +179,7 @@ The training corpus originates from 4,005 popular-music chord progressions extra
 
 To extend the corpus to 53-TET, we define 14 modal scale types, organized into seven base modes, each paired with its minor rotation. Every scale type is specified as a seven-element vector of holdrian-comma intervals that redistributes the 53 steps of the octave across the seven diatonic degrees. \Cref{tab:scale_types} lists the seven base modes; the minor rotation of each is obtained by cycling the interval vector to start from the sixth degree as shown in the Figure \ref{fig:sclales}.
 
-\begin{table}[hbt!]
+\begin{table}[]
   \caption{The seven base modal scale types. Each row shows holdrian-comma intervals between consecutive diatonic degrees (summing to 53). Each type has a corresponding minor rotation obtained by cycling the vector.}
   \label{tab:scale_types}
   \centering
@@ -199,20 +199,20 @@ To extend the corpus to 53-TET, we define 14 modal scale types, organized into s
   \end{tabular}
 \end{table}
 
-\begin{figure}[ht!]
+\begin{figure}[]
     \centering
     \includegraphics[width=1.0\columnwidth]{images/scaleEditor.png}
     \caption{Representation of the 53-TET modal scale construction, with the scale formed out of seven notes and their related holdrian-comma distances}
     \label{fig:sclales}
 \end{figure}
 
-Type 0 preserves the standard major scale intervals and acts as a baseline. The remaining six types redistribute the holdrian commas to produce intervals that fall outside the 12-TET grid: type 1, for instance, narrows the major second and major third toward neutral intervals (neither major nor minor), while type 2 compresses the third to 3 holdrian commas (a subminor third) and widens the fourth to 10. Each type, together with its minor rotation, reshapes the harmonic identity of every chord in the original progression. The familiar 12 pitch classes are repositioned within the 53-TET continuum: roots acquire comma-level shifts, thirds and sevenths move to new gradations, and the resulting chord qualities (vMvM7, NN7, smsm7, and others listed in \Cref{tab:chord_examples}) have no equivalent in the source 12-TET vocabulary. What was a standard jazz progression in the original dataset becomes, under each transformation type, a progression through chord qualities native to 53-TET, preserving the melodic contour and formal structure of the original while inhabiting a different harmonic world.
+Type 0 preserves the standard major scale intervals and acts as a baseline. The remaining six types redistribute the holdrian commas to produce intervals that fall outside the 12-TET grid: type 1, for instance, narrows the major second and major third toward neutral intervals (neither major nor minor), while type 2 compresses the third to 3 holdrian commas (a subminor third) and widens the fourth to 10. Each type, together with its minor rotation, reshapes the harmonic identity of every chord in the original progression. The familiar 12 pitch classes are repositioned within the 53-TET continuum: roots acquire comma-level shifts, thirds and sevenths move to new gradations, and the resulting chord qualities (vMvM7, NN7, smsm7, and others listed in \Cref{tab:chord_examples}) have no equivalent in the source 12-TET vocabulary. What was a standard chord progression in the original dataset becomes, under each transformation type, a progression through chord qualities native to 53-TET, preserving the melodic contour and formal structure of the original while inhabiting a different harmonic world.
 
-For each of the 48,060 12-TET files, the conversion maps every MIDI pitch class to its 53-TET target under the selected scale type. The deviation between each target and its nearest 12-TET pitch is encoded as a per-note MPE pitch bend, so that every note in the output MIDI file carries its own pitch-bend channel. The text sidecar is simultaneously converted: chord roots and qualities are renamed to their 53-TET equivalents following a microtonal naming convention for 53-TET modal interchange \citep{dalmazzo2025computer}. The convention classifies each chord interval (third, fifth, seventh) by its holdrian-comma distance into semantic categories (e.g., subminor, neutral, upmajor for thirds), then combines abbreviations to produce the chord symbol. Root names extend standard note letters with microtonal prefixes (\texttt{\^{}}, \texttt{\^{}\^{}}, \texttt{v}, \texttt{vv}) indicating comma-level pitch adjustments within 53-TET.
+For each of the 48,060 12-TET files, the conversion maps every MIDI pitch class to its 53-TET target under the selected scale type. The deviation between each target and its nearest 12-TET pitch is encoded as a per-note MPE pitch bend, so that every note in the output MIDI file carries its own pitch-bend channel. The text sidecar is simultaneously converted: chord roots and qualities are renamed to their 53-TET equivalents following a microtonal naming convention for 53-TET modal interchange (Anonymous 3). The convention classifies each chord interval (third, fifth, seventh) by its holdrian-comma distance into semantic categories (e.g., subminor, neutral, upmajor for thirds), then combines abbreviations to produce the chord symbol. Root names extend standard note letters with microtonal prefixes (\texttt{\^{}}, \texttt{\^{}\^{}}, \texttt{v}, \texttt{vv}) indicating comma-level pitch adjustments within 53-TET.
 
 Applying the 14 scale types to the 48,060 base files yields 672,840 paired MIDI and text sidecar files. Of these, 322 files (23 base songs across all key transpositions) fail a chord-count alignment check between MIDI and text sidecar and are excluded, leaving 672,518 usable paired files.
 
-
+% \citep{dalmazzo2025computer}
 % --------------------------------------------------------------------
 \section{Positional Embedding and Harmonic Eigenspace}
 \label{sec:eigenspace}
@@ -237,9 +237,8 @@ d(f_1, f_2, a_1, a_2) = a_{12} \left[ e^{-b_1\, s\, (f_2 - f_1)} - e^{-b_2\, s\,
     \label{fig:1d_dissonance}
 \end{figure}
 
-\subsection{Extension to tetrads}
 
-For a four-note chord, the root is fixed as reference, and the three upper voices are parameterized by frequency ratios $\alpha$, $\beta$, $\gamma$ relative to the root, all within one octave. The total dissonance is the sum over all six pairwise interactions:
+For a four-note chord, the root is fixed as reference, and the three upper voices are parametrized by frequency ratios $\alpha$, $\beta$, $\gamma$ relative to the root, all within one octave. The total dissonance is the sum over all six pairwise interactions:
 
 \begin{equation}
 \begin{split}
@@ -260,7 +259,7 @@ Because every term depends only on frequency ratios, transposing the chord by an
 
 \subsection{Positional embedding}
 
-For each chord in the dataset, $(\alpha, \beta, \gamma)$ is computed from the intervals above the symbolic root, and $D$ from \cref{eq:tetrad}. Chords whose voicings span more than one octave are folded into a single-octave distribution before computing the dissonance values, so that the vector reflects interval quality rather than register. The four-dimensional vector $(\alpha, \beta, \gamma, D)$ is z-score normalized using training-set statistics, projected through a two-layer MLP into the transformer's embedding dimension, and added to the positional embedding before the first attention layer. All tokens within a chord block (both symbolic and realization tokens) receive the same vector. Structural tokens between chords inherit the vector of the preceding chord; header and padding tokens receive a fixed default.
+For each chord in the dataset, $(\alpha, \beta, \gamma)$ is computed from the intervals above the symbolic root, and $D$ from \cref{eq:tetrad}. Chords which voicings span more than one octave are folded into a single-octave distribution before computing the dissonance values, so that the vector reflects interval quality rather than register. The four-dimensional vector $(\alpha, \beta, \gamma, D)$ is z-score normalized using training-set statistics, projected through a two-layer MLP into the transformer's embedding dimension, and added to the positional embedding before the first attention layer. All tokens within a chord block (both symbolic and realization tokens) receive the same vector. Structural tokens between chords inherit the vector of the preceding chord; header and padding tokens receive a fixed default.
 
 This provides the model with a psychoacoustically grounded signal about the harmonic quality of each chord without adding tokens to the vocabulary. In 53-TET, where two chord qualities can differ by a single holdrian comma, this continuous signal distinguishes chords that occupy different positions on the dissonance surface but may carry similar symbolic labels.
 
@@ -270,7 +269,7 @@ This provides the model with a psychoacoustically grounded signal about the harm
 
 Each chord in the dataset carries two kinds of information: a symbolic label (what the chord is called, in what style, in what form) and a sounding realization (which pitches, at what velocities, for how long). The tokenization encodes both into a single flat sequence so that the model learns the relationship between symbol and voicing as part of the same next-token prediction task. There is one vocabulary, one autoregressive loss, and one prediction head.
 
-\subsubsection{Symbolic Layer (L1)}
+\subsection{Symbolic Layer (L1)}
 \label{sec:l1}
 
 The symbolic content is derived from the text sidecar. A sequence begins with a song-level header: a style token (\texttt{STYLE\_Jazz}, \texttt{STYLE\_Bossa}, etc.), a tonality token, and a type token identifying the scale type. After the header, each chord is encoded as a tuple: a dot marker (\texttt{.}), a duration token (\texttt{DUR\_<d>}), a root token (\texttt{R\_<name>}), a quality token (\texttt{Q\_<qual>}), optional extension tokens (\texttt{X\_<phrase>}), and an optional slash bass (\texttt{R\_<name>} after \texttt{/}). The \texttt{R\_} / \texttt{Q\_} / \texttt{X\_} prefixes keep the L1 symbolic vocabulary disjoint from the L2 pitch vocabulary within the same flat token stream. Between chord tuples, structural tokens mark bars (\texttt{|}), repeats (\texttt{|:}, \texttt{:|}) and form sections (nine labels: \texttt{FORM\_INTRO}, \texttt{FORM\_A}--\texttt{FORM\_D}, \texttt{FORM\_VERSE}, \texttt{FORM\_HEAD}, \texttt{FORM\_CODA}, \texttt{FORM\_SEGNO}).
@@ -279,12 +278,12 @@ The 131 raw \textit{iReal Pro} style strings are normalized to 16 canonical buck
 
 Root tokens (\texttt{R\_<name>}) extend standard note letters with microtonal prefixes (\texttt{\^{}}, \texttt{\^{}\^{}}, \texttt{v}, \texttt{vv}) indicating comma-level pitch adjustments within 53-TET, following the naming convention for modal interchange in this temperament \citep{dalmazzo2025computer}. Quality tokens (\texttt{Q\_<qual>}) are built by classifying each chord interval (third, fifth, seventh) according to its holdrian-comma distance into semantic categories (e.g., subminor, neutral, upmajor for the third) and combining their abbreviations; the convention-driven set is extended by the standard 12-TET labels retained from the source corpus, yielding 193 distinct quality tokens in total. Extensions (e.g., \texttt{X\_add\,9}, \texttt{X\_alter\,b5}) are encoded as single tokens that preserve the space.
 
-\subsubsection{Realization Layer (L2)}
+\subsection{Realization Layer (L2)}
 \label{sec:l2}
 
 Immediately after each symbolic tuple, a realization block encodes the sounding content of the same chord: a \texttt{CHORD\_START} delimiter, a duration token (onset-to-onset harmonic rhythm, typically equal to the L1 duration of the same chord and retained here so the realization block can be decoded independently), up to eight notes sorted low to high, and a \texttt{CHORD\_END} delimiter. Pitch-bearing tokens represent absolute 53-TET step indices spanning octaves 2 through 8 (319 step values) paired with one of 8 velocity bins.
 
-\subsubsection{Pitch Encoding: Model A vs. Model B}
+\subsection{Pitch Encoding: Model A vs. Model B}
 \label{sec:model_ab}
 
 The core design choice of this work is \emph{what a pitch token means}. We train and compare two models that share every other component (L1 alphabet, vocabulary size, architecture, block size, Eigenspace positional embedding, training data) and differ only in the semantics of the pitch token inside L2. This isolates pitch-token semantics as the single independent variable.
@@ -295,7 +294,7 @@ The core design choice of this work is \emph{what a pitch token means}. We train
 
 Both encodings land at exactly the same total vocabulary size (2{,}930 tokens) and the same sequence length (4,096 tokens). The comparison asks whether tying the pitch token to the MIDI grid (Model A) or letting the model reason entirely in 53-TET steps and translating to MIDI afterward (Model B) yields a more coherent harmonic generator.
 
-\subsubsection{Sequence Layout}
+\subsection{Sequence Layout}
 \label{sec:interleaving}
 
 L1 and L2 occupy one flat token sequence. For each chord, the symbolic tuple and the realization block appear consecutively. \Cref{fig:token_stream} shows a two-chord example.
@@ -323,10 +322,36 @@ CHORD_START DUR_4.0 PV_209_3 PV_240_3
 
 At generation time, the model is prompted with a partial header (style, tonality, type) and optionally a first symbolic chord, and continues by predicting both symbolic and realization tokens autoregressively.
 
-\subsection{Training Corpus}
-\label{sec:training_corpus}
+% --------------------------------------------------------------------
+\section{Model and Training}
+\label{sec:model}
 
-The 672,518 usable paired files are packed into fixed-length sequences of 4,096 tokens, with no song crossing a sequence boundary. The split is performed at the song level (before packing) to prevent data leakage between training and validation. The resulting corpus contains 660,870 training sequences (2.71 billion tokens) and 13,496 validation sequences (55.3 million tokens).
+\subsection{Architecture}
+
+Both models share a GPT-2 decoder-only transformer \citep{radford2019language} with 12 layers, 12 attention heads, and an embedding dimension of 768, totalling approximately 85 million parameters. The context window is 4,096 tokens, matching the packed sequence length. Linear layers and layer normalization use no bias terms; the language model head is weight-tied to the token embedding matrix. Causal self-attention is computed via PyTorch's \texttt{scaled\_dot\_product\_attention} kernel (Flash Attention) when available. A dropout rate of 0.1 is applied to attention weights and residual projections throughout.
+
+\subsection{Embedding Composition}
+
+Each input token receives a representation formed by summing four components:
+
+\begin{equation}
+\mathbf{h} = \mathbf{e}_{\text{tok}} + f_{\text{eigen}}(\alpha, \beta, \gamma, D) + \mathbf{e}_{\text{local}} + \mathbf{e}_{\text{seq}}
+\label{eq:embedding}
+\end{equation}
+
+\noindent where $\mathbf{e}_{\text{tok}}$ is the learned token embedding; $f_{\text{eigen}}$ is the Harmonic Eigenspace projection described in \Cref{sec:eigenspace}; $\mathbf{e}_{\text{local}}$ is a learned embedding over intra-chord token offsets (position 0 for \texttt{CHORD\_START}, position 1 for the duration token, and so on, up to a maximum of 20 positions); and $\mathbf{e}_{\text{seq}}$ is a standard learned sequential positional embedding over the 4,096-token context.
+
+The Harmonic Eigenspace projection $f_{\text{eigen}}$ is a three-layer MLP with GELU activations:
+$4 \rightarrow 128 \rightarrow 128 \rightarrow 768$.
+Its output is added elementwise to the sum of the other three embeddings before the first transformer block. All tokens within a chord block share the same eigenspace vector; structural and padding tokens receive a fixed default.
+
+\subsection{Training}
+
+Both models are trained from scratch on the 660,870-sequence training corpus (2.71 billion tokens) using AdamW \citep{loshchilov2019decoupled} with $\beta_1 = 0.9$, $\beta_2 = 0.95$, and weight decay $\lambda = 0.1$ applied only to matrix weights (not biases, layer norm parameters, or embeddings). The peak learning rate is $3 \times 10^{-4}$, reached after a 2,000-iteration linear warmup and then decayed via cosine annealing to a minimum of $3 \times 10^{-5}$ over 100,000 total iterations. Gradients are clipped to a global norm of 1.0.
+
+Training uses a micro-batch of 16 sequences with 16 gradient accumulation steps, yielding an effective batch size of $16 \times 16 \times 4096 \approx 1.05$ million tokens per optimization step. Mixed-precision training (float16 with dynamic loss scaling) is used throughout. Models A and B are trained independently with identical hyperparameters, differing only in the pitch-token encoding of the L2 realization layer.
+
+All experiments were run on a single NVIDIA RTX 5090 (32 GB VRAM).
 
 % --------------------------------------------------------------------
 \section{Listening Test}
@@ -375,20 +400,19 @@ Participants are instructed to use headphones and are warned that isolated chord
 
 The survey enforces that the full clip be played and all four sliders be moved before a response can be submitted, yielding four continuous ratings per clip per participant. Because source labels (dataset / Model A / Model B) are hidden and clip order is randomized, the resulting ratings support a within-subjects comparison between the two models and the dataset reference along each of the four perceptual axes.
 
-\begin{figure}[ht]
+\begin{figure*}[!ht]
     \centering
-    \includegraphics[width=1.0\columnwidth]{images/Collection_Ratings.png}
-    \caption{A Scatter-plot matrix is summarized showing the transversal axis. The listening test asked for Harmony (voicing), Musicality, Dissonance, and Novelty perception in participants. The three color-coded models are compared, where ground-truth (dataset) is light-red, Model A is orange, and Model B is blue.}
-    
-    \label{fig:1d_dissonance}
-\end{figure}
+    \includegraphics[width=2.0\columnwidth]{images/Collection_Ratings.png}
+    \caption{Rating distributions per collection across four perceptual dimensions. Each curve is a kernel density estimate based on all ratings for the corresponding source ($n = 112$ ratings per source: 8 clips $\times$ 14 participants). Dashed vertical lines mark each source's mean. The dataset (light red) scores highest on harmony and musicality and lowest on dissonance and novelty. Models A (orange) and B (blue) overlap closely on harmony, musicality, and dissonance, while Model B trends higher on novelty.}
+    \label{fig:listening_test}
+\end{figure*}
 
-\begin{figure}[t]
+\begin{figure}[H]
     \centering
     \includegraphics[width=1.0\columnwidth]{images/type_heatmap.png}
     \caption{The Matrix comparison shows the perception of the four perception dimensions of the listening test. }
     
-    \label{fig:1d_dissonance}
+    \label{fig:chords_perception}
 \end{figure}
 
 
@@ -404,37 +428,52 @@ The survey enforces that the full clip be played and all four sliders be moved b
 \section{Conclusion and Discussion}
 \label{sec:conclusion}
 
-This paper presented a transformer-based system for generating chord progressions in 53-TET, trained on a large paired corpus of symbolic and MIDI-MPE files and evaluated through a listening study with 14 participants rating 24 clips across four perceptual dimensions. We discuss the findings along five axes: the dataset, the comparison between the two pitch-token models, the two-level tokenization design, the perceptual response to microtonal transformation types, and directions for future work.
+This paper presented a transformer-based system for generating chord progressions in 53-TET, trained on a large paired corpus of symbolic and MIDI-MPE files and evaluated through a listening study with 14 participants rating 24 clips across four perceptual dimensions.
 
-\subsection{The dataset}
+\subsection{Dataset and models}
 
-The 672,840 paired MIDI-MPE and symbolic files proved sufficient to train both models to convergence on 53-TET chord progressions conditioned on style, form, tonality, and transformation type. The listening test confirms that the generated progressions are perceived as harmonically coherent (mean harmony ratings of 6.16 and 6.18 for Models A and B, on a 1--10 scale) and musically plausible (mean musicality of 6.09 and 5.95), though both fall below the dataset reference (harmony 7.51, musicality 7.32; $p < 0.0001$, Mann-Whitney, Holm-corrected). The gap indicates room for improvement in generation quality, but the absolute ratings, consistently above the midpoint on both harmony and musicality scales, confirm that the synthetic microtonal corpus produces models capable of generating progressions that listeners rate as coherent and musically plausible. Informal inspection of the dataset reveals examples with compelling harmonic motion, though no aesthetic filtering was applied during corpus construction. The current voicings are also minimal: the dataset does not yet include extensions, melodic passing tones, or transition steps between chords. Harmonic preparation techniques familiar from tonal practice, such as dominant preparations, first-inversion approaches, plagal cadences, tritone substitutions, and modal interchange, have not been encoded into the generation pipeline and remain directions for future work.
+Both models trained to convergence on progressions conditioned on style, form, tonality, and transformation type. Table~\ref{tab:source_ratings} summarises perceptual results by source. Both models score above the midpoint on harmony and musicality, confirming the synthetic corpus is sufficient for coherent generation, though both fall significantly below the dataset reference ($p < 0.0001$, Mann-Whitney, Holm-corrected). The current voicings remain minimal: the dataset does not yet include extensions or transition steps between chords.
+
+\begin{table}[ht]
+\centering
+\tiny
+\caption{Mean ($\pm$\,SD) perceptual ratings by source (scale 1--10, $n=144$ ratings per source).}
+\label{tab:source_ratings}
+\begin{tabular}{lcccc}
+\toprule
+Source & Harmony & Musicality & Dissonance & Novelty \\
+\midrule
+Dataset & $7.60\pm2.02$ & $7.48\pm2.31$ & $4.57\pm2.52$ & $4.43\pm2.91$ \\
+Model A & $6.42\pm2.23$ & $6.34\pm2.35$ & $5.88\pm2.35$ & $5.92\pm2.50$ \\
+Model B & $6.43\pm2.37$ & $6.06\pm2.48$ & $5.86\pm2.42$ & $6.68\pm2.59$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Model A vs. Model B}
 
-As authors, we perceive Model B to produce more coherent and musical progressions with better-encoded form structure. However, the stimuli used in the listening test were not curated: each clip was drawn from a single stochastic generation run, and listeners evaluated that particular output rather than a selection of the model's best work. Under these conditions, the two pitch-token semantics yielded near-identical perceptual results. No significant difference was found between Model A and Model B on harmony ($\Delta = -0.02$, $p = 1.0$), musicality ($\Delta = 0.14$, $p = 0.84$), or dissonance ($\Delta = 0.18$, $p = 0.84$). Model B did, however, receive higher novelty ratings (6.79 vs. 6.25, $p = 0.08$), approaching significance. This is an interesting result: the holdrian-comma vocabulary, which carries no trace of the 12-TET grid, may lead the model to produce pitch combinations that listeners perceive as less familiar. These results are consistent with the interpretation that the model's harmonic learning does not depend on inheriting the structure of the 12-TET grid through MIDI encoding, and that the 53-TET step space is expressive enough on its own. A larger participant pool and a stimulus set that includes multiple generation runs per condition would be needed to confirm whether this novelty trend and the authors' informal observations reflect genuine perceptual differences or sampling variability.
+As authors, we perceive Model B to produce more coherent and musical progressions with better-encoded form structure. However, the stimuli used in the listening test were not curated: each clip was drawn from a single stochastic generation run, and listeners evaluated that particular output rather than a selection of the model's best work. Under these conditions, the two pitch-token semantics yielded near-identical perceptual results (\Cref{fig:listening_test}). No significant difference was found between Model A and Model B on harmony ($\Delta = -0.02$, $p = 1.0$), musicality ($\Delta = 0.14$, $p = 0.84$), or dissonance ($\Delta = 0.18$, $p = 0.84$). Model B did, however, receive higher novelty ratings (6.79 vs. 6.25, $p = 0.08$), approaching significance. This is an interesting result: the holdrian-comma vocabulary, which carries no trace of the 12-TET grid, may lead the model to produce pitch combinations that listeners perceive as less familiar. These results are consistent with the interpretation that the model's harmonic learning does not depend on inheriting the structure of the 12-TET grid through MIDI encoding, and that the 53-TET step space is expressive enough on its own.
 
 \subsection{The two-level tokenization}
 
-The interleaved L1+L2 layout accomplished its design goal: the model learns to predict both the symbolic identity and the sounding voicing of each chord within a single autoregressive stream, without a separate voicing algorithm at inference time. The harmony-musicality correlation across all ratings ($\rho = 0.780$, $p < 0.0001$) indicates that listeners who found a progression harmonically coherent also rated it as musical, and the negative correlation between harmony and dissonance ($\rho = -0.379$, $p < 0.0001$) confirms that perceived roughness reduces perceived quality. The fact that both models produce rated progressions above the midpoint of both scales suggests that binding symbol to realization in one stream is a viable strategy for harmony generation.
+The interleaved L1+L2 layout accomplished its design goal: the model learns to predict both the symbolic identity and the sounding voicing of each chord within a single autoregressive stream, without a separate voicing algorithm at inference time. The harmony-musicality correlation across all ratings ($\rho = 0.780$, $p < 0.0001$) indicates that listeners who found a progression harmonically coherent also rated it as musical, and the negative correlation between harmony and dissonance ($\rho = -0.379$, $p < 0.0001$) confirms that perceived roughness reduces perceived quality.
 
-We observe, however, that tokenization as a representational strategy has an inherent limitation: it flattens the relational structure of music into a one-dimensional sequence and relies entirely on the attention mechanism to reconstruct harmonic, temporal, and voicing relationships from that flat stream. A chord is not a sequence of isolated pitch events; it is a simultaneous vertical structure unfolding over a quantized time grid. Encoding it as a linear chain of tokens discards this two-dimensional structure by design, placing the full burden of recovery on learned attention patterns. This motivates a future direction: a model that bypasses tokenization and instead receives each time step as a vector encoding the full vertical content of the chord, preserving the simultaneous pitch relationships as input structure rather than asking the network to infer them.
+We observe, however, that tokenization as a representational strategy has an inherent limitation: it flattens the relational structure of music into a one-dimensional sequence and relies entirely on the attention mechanism to reconstruct harmonic, temporal, and voicing relationships from that flat stream. A chord is a simultaneous vertical structure unfolding over a quantized time grid. Encoding it as a linear chain of tokens discards this two-dimensional structure by design, placing the full burden of recovery on learned attention patterns.
 
 \subsection{Perceptual response to microtonal types}
 
 The listening test reveals a clear gradient across transformation types. Types closest to 12-TET equivalents received the highest acceptance scores (harmony + musicality $-$ dissonance): type 5 minor (downminor, 9.93) and type 3 major (harmonic 3rd and 7th, 8.63) lead the ranking, while type 6 neutral N (4.19) received the lowest acceptance together with the highest dissonance rating (6.83) and the lowest musicality (5.15). Type 3 is a particularly revealing case: its holdrian-comma distribution places the major third and major seventh closer to the just-intonation ratios $5{:}4$ and $15{:}8$ than their 12-TET counterparts, producing chords that are more aligned with the harmonic series. Listeners responded accordingly, rating type 3 among the least dissonant (4.66) and most coherent (6.76), consistent with the perception of chords that sound precisely in tune rather than merely familiar. This suggests that the perceptual gradient across types is not driven by familiarity alone: proximity to harmonic-series intervals contributes independently to perceived consonance, even when the chord quality itself has no exact 12-TET match.
 
-The positive correlation between dissonance and novelty ($\rho = 0.438$, $p < 0.0001$) further supports a dual reading: unfamiliar chord qualities are simultaneously perceived as more dissonant and more novel. This pattern is consistent with the observation that chord qualities lacking a 12-TET counterpart, particularly neutral intervals, tend to receive higher dissonance ratings than their psychoacoustic profile alone predicts, suggesting that familiarity and spectral roughness both contribute to dissonance judgments. Notably, type 4 minor (UpMajor\_Minor) received the highest novelty rating (7.09) while maintaining harmony and musicality ratings above 6.3, indicating that some microtonal types can sound both new and musically coherent to listeners.
+The positive correlation between dissonance and novelty ($\rho = 0.438$, $p < 0.0001$) further supports a dual reading: unfamiliar chord qualities are simultaneously perceived as more dissonant and more novel. This pattern is consistent with the observation that chord qualities lacking a 12-TET counterpart, particularly neutral intervals, tend to receive higher dissonance ratings than their psychoacoustic profile alone predicts, suggesting that familiarity and spectral roughness both contribute to dissonance judgments (See Figure \ref{fig:chords_perception}). Notably, type 4 minor (UpMajor\_Minor) received the highest novelty rating (7.09) while maintaining harmony and musicality ratings above 6.3, indicating that some microtonal types can sound both new and musically coherent to listeners.
 
 \subsection{Future work}
 
-Several directions follow from these results. On the compositional side, we plan to build an interactive system that supports form-level composition and harmonic manipulation using established tonal techniques such as dominant preparations, first-inversion approaches, plagal cadences, tritone substitutions, and modal interchange, extended to the 53-TET vocabulary. A related goal is to develop navigation principles for microtonal harmony: showing intermediate steps from a stable chord to its dominant version, or tracing paths through the Eigenspace that connect distant chord qualities through perceptually smooth transitions. Neutral chords, for instance, are perceived as highly dissonant in isolation, but placed in context as dominant or passing steps, they could expand the functional vocabulary rather than simply adding roughness. How to navigate such an expanded harmonic space is a research line with no precedent in the literature.
-
-On the modeling side, we intend to compare the current tokenized approach against a non-tokenized architecture that receives each time step as a vector encoding the full vertical content of the chord, testing whether preserving simultaneous pitch relationships as input structure improves harmonic coherence over learning them from a flattened sequence. Beyond generation, we are interested in using the trained model as an experimental instrument: listening to the structure of its latent space to discover harmonic regions and transitions that a composer might not reach through theory alone.
+Several directions follow. On the compositional side, we plan to build an interactive system for form-level composition and harmonic manipulation --- dominant preparations, plagal cadences, tritone substitutions, and modal interchange --- extended to the 53-TET vocabulary, together with navigation principles for the Eigenspace that trace perceptually smooth paths between distant chord qualities. On the modeling side, we intend to compare the current tokenized approach against a non-tokenized architecture that receives each time step as a vector encoding the full vertical chord content, and to use the trained model as an analytical instrument for exploring harmonic regions in its latent space.
 
 % \section*{References}
 
 \bibliographystyle{apalike}
+\FloatBarrier
 \bibliography{references}
 
 \end{document}
