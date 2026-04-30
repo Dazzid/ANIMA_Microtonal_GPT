@@ -8,7 +8,16 @@ The repository contains the full pipeline from raw chord charts to a trained tra
 
 ## Why 53-TET
 
-53-tone equal temperament closely approximates 5-limit just intonation (and reasonable 7- and 11-limit ratios), so it is a practical target for studying microtonal harmony with a discrete symbolic vocabulary. In 12-TET, C# = D♭. In 53-TET they are different pitches, and that distinction matters for the model — the dataset preserves absolute pitch height across all transpositions.
+31-EDO already extends 12-TET with five qualities of third (and of every interval class): **subminor, minor, neutral, major, supermajor**. That alone opens a far richer harmonic palette than 12-TET, where minor and major exist.
+
+53-EDO keeps those same five qualities but adds a finer inflection: each one comes in an **up** and **down** variant (notated `^` and `v` in this project's L1 vocabulary). That gives ten shades per interval class instead of five, which is what we actually need to spell common-practice consonances *and* the comma-separated alternatives that distinguish, for example, a 5-limit major third from a Pythagorean one.
+
+So 53-EDO is the smallest tuning that gives us:
+
+1. Same chord colors of 12-TET.
+2. The qualitative vocabulary of 31-EDO (sub / minor / neutral / major / super), and
+3. A second axis (up / down) that resolves the commas 31-EDO still glosses over,
+
 
 ## Dataset
 
