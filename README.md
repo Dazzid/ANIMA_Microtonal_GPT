@@ -1,163 +1,176 @@
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
-# ANIMA Microtonal GPT
+# Microtonal GPT for 53-TET Chord Progressions
 
-[ANIMA](https://cordis.europa.eu/project/id/101203318) (Artificial INtelligence-based Interactive Microtonal Compositional Assistant) 
-This is a pipeline for creating hybrid 12-TET/53-TET MIDI chord progression datasets for training transformer models on microtonal harmony.
+A GPT-2 model that generates **harmonic chord progressions in 53-TET microtonality with learned voicings**, conditioned on transformation type, style, form, tonality, and time structure. Trained on a 672,840-song parallel dataset of jazz-derived progressions transposed and augmented into 53-EDO.
 
+The repository contains the full pipeline from raw chord charts to a trained transformer that emits MPE-MIDI in 53-TET, plus a second model variant that generates a pure microtonal symbolic stream and translates to MIDI deterministically after sampling.
 
-## 🎯 Project Overview
+## Why 53-TET
 
-This project aims to create a comprehensive dataset of chord progressions that bridges standard Western harmony (12-tone equal temperament) with microtonal music (53-TET) for training GPT-2 style models capable of generating musically coherent microtonal compositions.
+53-tone equal temperament closely approximates 5-limit just intonation (and reasonable 7- and 11-limit ratios), so it is a practical target for studying microtonal harmony with a discrete symbolic vocabulary. In 12-TET, C# = D♭. In 53-TET they are different pitches, and that distinction matters for the model — the dataset preserves absolute pitch height across all transpositions.
 
-**Source**: ~4,000 jazz standards from iReal Pro  
-**Target**: 48,000+ transposed progressions with microtonal augmentation  
-**Output**: MPE-MIDI format with pitch bend for microtonal accuracy
+## Dataset
 
----
+Parallel twin-tree, 1:1 mirror between MIDI and text sidecars:
 
-## 📋 Pipeline Stages
+```
+dataset/midi_files/53_tet_mpe/<type_dir>/<stem>.mid
+dataset/text_files/53_tet_mpe/<type_dir>/<stem>.txt
+```
 
-### **Stage 1: iReal → MIDI Dataset Creation**
+- **672,840 paired files**, built from ~4,000 iReal Pro jazz standards expanded through voicing, 12-key transposition, and 14 microtonal transformations.
+- **14 transformation types** (`type_0_major`, `type_0_minor`, … `type_6_neutral_n`) — each is a different mapping from 12-TET sonorities into 53-EDO regions.
+- **MIDI** carries the voicing as MPE (per-channel pitch-bend) for accurate microtonal playback.
+- **Text sidecar** carries everything MIDI cannot: style (16 canonical buckets), tonality (key), form markers (`Form_A/B/C/D`, intro, head, coda, segno), repeat barlines (`|:` `:|`), and per-chord `. <duration> <root> <quality> <extensions> [/ <bass>]`.
 
-Convert iReal Pro chord charts to high-quality MIDI with professional voicing.
+Sidecar example:
+```
+<style> Latin Form_A |: . 4.0 C maj7 | . 4.0 A m7 | ... :|
+```
 
-#### Voicing Strategy
-- **Register**: Bass root in C2-C3, chord tones spanning 1-2 octaves
-- **Voicing Style**: 7 distinct voicing templates per chord type:
-  - Various open and closed positions
-  - Different note spacings and doublings
-  - Extended voicings with 9ths, 11ths, 13ths
-- **Voice Leading**: Smooth transitions with minimal motion between chords
-- **Duration**: Block chords (whole/half notes) to focus on harmonic content
+Builder: [src/generate_53tet_dataset.py](src/generate_53tet_dataset.py).
 
-#### Rhythm Implementation
-- **Simple Approach**: Quarter/half note chords aligned to harmonic rhythm
+## Approach: hybrid L1 + L2 stream
 
-#### Technical Implementation
-Enhanced `voicing.py` module with 7 voicing templates (`v_0` through `v_6`) per chord type:
-- Each template offers different harmonic textures and voice distributions
-- Automated template selection based on chord position in progression
-- Support for all common jazz chord types (maj7, m7, dom7, ø7, dim7, sus, aug, etc.)
-- Voice leading optimization methods available
+Per chord, the model sees two aligned blocks in a single autoregressive stream:
 
-#### What's Been Completed (Notebook: 01_musicXML_parser.ipynb)
-1. ✅ **XML Parsing** - Parse ~4,000 iReal Pro XML files into structured chord progressions
-2. ✅ **Song Structure Expansion** - Expand repeats, codas, and form markers into full sequences
-3. ✅ **Duration Handling** - Extract and process rhythmic durations from XML
-4. ✅ **MIDI Voicing** - Convert chord symbols to MIDI note arrays using voicing.py
-5. ✅ **Validation** - XML-to-token accuracy verification (~93.4% match rate)
+```
+[ L1 symbolic tokens ]   [ L2 voicing tokens ]
+```
 
-**Status**: ✅ Stage 1 Core Complete - Ready for Stage 2 (Transposition)
+- **L1** is the semantic label — what chord, in what form, in what style.
+- **L2** is the realization — which 53-TET pitches at which durations and velocities.
+- Alignment is by chord index: the k-th L1 chord block matches the k-th L2 `CHORD_START…CHORD_END` block.
+- Song-level tokens (`<style>`, `<tonality>`, `TYPE_*`) appear once at the start; structural markers (`|`, `|:`, `:|`, `Form_*`) sit between chord blocks at their bar boundaries.
+- One vocabulary, one softmax head, one loss. No dual decoder.
 
----
+Worked example:
 
-### **Stage 2: Enharmonic Transposition**
+```
+<start>
+STYLE_Jazz TONALITY_C_major TYPE_0_major FORM_A |:
+. 4.0 C maj7                                                          ← L1 block
+CHORD_START DUR_4.0 P_212 V_3 P_243 V_3 P_265 V_2 P_284 V_3 CHORD_END  ← L2 block
+BAR
+. 4.0 A m7
+CHORD_START DUR_4.0 P_209 V_3 P_240 V_3 P_262 V_2 P_281 V_3 CHORD_END
+:|
+<end>
+```
 
-Expand dataset through intelligent transposition.
+## Two models, one comparison
 
-#### Augmentation Strategy
-- **Scale**: 12 transpositions per song → **48,000 examples**
-- **Key Consideration**: Track actual pitch height (critical for 53-TET mapping)
-  - In 12-TET: C# = Db
-  - In 53-TET: C# ≠ Db (different microtonal positions)
-- **Register Management**: Avoid extremely high/low transpositions
+| Aspect    | **Model A** — Hybrid Symbolic + MIDI/MPE     | **Model B** — Hybrid Symbolic + 53-TET Column      |
+|-----------|-----------------------------------------------|----------------------------------------------------|
+| L1        | Symbolic text sidecar                         | Same                                               |
+| L2        | MIDI/MPE pitch + velocity tokens (`P_<step>`) | Pure 53-EDO holdrian tokens (`H_<step>_<vel>`)     |
+| Output    | MIDI directly from generation                 | Symbolic stream → deterministic MIDI translator    |
+| Purpose   | Learn voicings from real MIDI realizations    | Learn pure microtonal spelling, MIDI-free training |
 
-#### Benefits
-- Natural key distribution balance
-- Model generalization across all keys
-- Manageable dataset size for training
+Both share `block_size = 4096`, `vocab_size ≈ 2930`, GPT-2-small architecture (L12, H12, E768, ~90M params), and the same EigenSpace positional input.
 
-#### Implementation Progress
-- ✅ **Transposition Module** - `transposition.py` with `transpose_song()` method
-- ✅ **Testing** - Verified transposition on sample songs
-- ⏳ **Full Dataset** - Need to run complete 12-key augmentation on all 4,000 songs
+## EigenSpace as positional embedding
 
-**Status**: 🔧 In Progress - Transposition code ready, needs full dataset run
+Each chord has a 4-vector `(α, β, γ, D)` from a geometric chord-space construction (see [src/eigenspace.py](src/eigenspace.py)). Three coordinates encode interval-class structure; D is a dissonance measure. The vector is **not tokenized** — it is projected through a small MLP (4 → n_embd) and added to the positional embedding before the transformer blocks.
 
----
+Visibility rule: header tokens use a fixed default; chord blocks carry their own vector; structural markers between chord *k–1* and chord *k* inherit *k–1*'s vector (no future leakage). End-of-sequence inherits the last chord; padding uses the header default.
 
-### **Stage 3: Microtonal Data Augmentation**
+This injects harmonic geometry as a continuous bias while leaving the discrete vocabulary clean.
 
-Progressive introduction of 53-TET microtonality.
+## Repository layout
 
-#### Three Levels of Microtonal Integration
+```
+src/
+  generate_53tet_dataset.py      Builder of the parallel twin-tree dataset
+  build_eigen_sidecars.py        Parallel CLI for per-song (α, β, γ, D) sidecars
+  eigen_sidecar.py, eigenspace.py
+  formats.py, convention.py      Canonical style / note / quality definitions
+  chord_mapping.py               53-TET note names and chord interval maps
+  voicing.py                     Chord symbol → voicing realization
+  transposition.py               Key/root transposition helpers
+  l1.py                          L1 parser + L1+L2 interleaver (with eigen spans)
+  tokenizer.py                   Method A tokenizer (P_<step> + V_<v>)
+  tokenizer_b.py                 Method B tokenizer (H_<step>_<vel>)
+  pack_data_v3.py                Method A packer  → dataset/tokenized/
+  pack_data_b.py                 Method B packer  → dataset/tokenized_b/
+  model.py                       GPT-2 with EigenSpace positional MLP
+  train.py, trainer.py, configurator.py
+  generate.py, generate_b.py     Inference entries
+  holdrian_to_midi.py            Method B post-hoc 53-EDO → MPE-MIDI translator
+  midi_viz.py, play_mpe.py
+  paper.tex                      Paper source
+  listening_test.js              Browser AB-test frontend
+  01_..12_*.ipynb                Pipeline + analysis notebooks (in order)
+dataset/
+  midi_files/53_tet_mpe/<type_dir>/<stem>.mid
+  text_files/53_tet_mpe/<type_dir>/<stem>.txt
+  tokenized/                     Method A packed bins + meta.json + vocab.json
+  tokenized_b/                   Method B packed bins
+checkpoints/
+  modelA_hybrid_v1/              Method A weights
+  modelB_column_v1/              Method B weights
+```
 
-##### **Level 1: 10% Microtonal (Sparse Substitutions)**
-- Replace 1-2 chords per progression with 53-TET alternatives
-- **Targets**: Dominant chords (septimal 7ths), color chords (maj7, min7)
-- **Goal**: Teach model "microtonal chords in familiar contexts"
-- **Method**: Maintain functional harmonic logic
+## Vocabulary at a glance
 
-##### **Level 2: 50% Microtonal (Hybrid)**
-- Systematic alternation: 12-TET → 53-TET → 12-TET → 53-TET
-- **Goal**: Model learns transitions between tuning systems
-- **Application**: Bridges familiar and novel harmonic spaces
+**Method A — total vocab 2,930**
 
-##### **Level 3: 100% Microtonal (Full EigenSpace)**
-- Entire progressions in 53-TET
-- Navigate EigenSpace using dissonance metrics
-- **Goal**: Purely microtonal harmonic syntax
-- **Application**: Explore novel microtonal progressions
+| Group         | Count | Notes                                         |
+|---------------|------:|-----------------------------------------------|
+| Special       |     4 | `<pad> <start> <end> <sep>`                   |
+| Structural    |     4 | `CHORD_START`, `CHORD_END`, `BAR`, `REST`     |
+| Duration      |    10 | `DUR_*` ∈ {0.5, 1.0, …, 16.0}                 |
+| Type / Style / Form | 14 + 16 + 9 | Conditioning labels                  |
+| Pitch (L2)    |   319 | `P_106 … P_424`, absolute 53-EDO step         |
+| Velocity (L2) |     8 | `V_1 … V_8`                                   |
+| L1 symbolic   |   ~321| Roots (71), qualities (193), extensions (16), tonality, structurals |
 
-#### 53-TET Substitution Methods
+**Method B** replaces the 319 `P_*` × 8 `V_*` tokens with a flat compound `H_<step>_<vel>` vocabulary (319 × 8 = 2,552 tokens). The total vocab size is held at ~2,930 so the model architecture loads identically and the A↔B comparison isolates one variable: the *interpretation* of the pitch token (MIDI-derived vs. pure 53-EDO).
 
-| Method    | Approach | Best For |
-|-----------|----------|----------|
-| 1 | Pre-map 12-TET → 53-TET equivalents<br/>| Adding familiar sonorities |
-| 2 | EigenSpace dissonance distance to move the harmony into other chords | Exploring new harmonic space |
-| 3 | Add intermediate chords | (preserves function) |
+## Reproducing
 
-**Status**: 🔄 Planned
+Stages are idempotent; rerun any stage by simply running the script.
 
----
+```bash
+# A. Build the paired 53-TET dataset (hours)
+python src/generate_53tet_dataset.py --workers 8
 
-### **Stage 4: Tokenization Strategy**
+# B. Build EigenSpace sidecars (~7 min, 672,518 / 672,840 = 99.95% coverage)
+python src/build_eigen_sidecars.py --workers 12
 
+# C. Pack tokens + eigen for Model A (~7 min)
+python src/pack_data_v3.py --workers 24
+# → dataset/tokenized/{train,val}_{tokens,eigen}.bin + meta.json + vocab.json
 
+# D. Train Model A (GPT-2-small preset, ~90M params)
+python src/train.py \
+    --n-layer 12 --n-head 12 --n-embd 768 \
+    --batch-size 8 --grad-accum 8 \
+    --max-iters 50000 --warmup-iters 2000 \
+    --checkpoint-dir checkpoints/modelA_hybrid_v1
 
+# E. Generate
+python src/generate.py     # Model A: writes MPE-MIDI directly
+python src/generate_b.py   # Model B: writes 53-EDO stream, then holdrian_to_midi
+```
 
+If your GPU OOMs, halve `--batch-size` and double `--grad-accum` to keep the effective batch (64) constant.
 
----
+## Evaluation
 
-### **Stage 5: GPT-2 Model Training**
+Models are compared on identical prompts using:
 
-Train transformer model on hybrid 12-TET/53-TET sequences.
+1. **Form adherence** — balanced `|:`/`:|` and detected section change after `Form_A`.
+2. **Symbol↔voicing consistency** — L2 pitch set maps back to the emitted L1 symbol within 53-TET tolerance.
+3. **Style and type conditioning** — fixing one and varying the other shifts L1 / L2 statistics measurably.
+4. **Novelty vs. memorization** — n-gram overlap with the training set on both L1 and L2.
+5. **Listening test** — browser-based AB test (see [src/listening_test.js](src/listening_test.js) and [src/12_listening_test_dataset.ipynb](src/12_listening_test_dataset.ipynb)).
 
-#### Architecture
-- **Model Size**: GPT-2 Small (124M parameters) - sufficient for this domain
-- **Context Window**: 4096 tokens (captures several progressions)
-- **Positional Encoding**: EigenSpace chord reference as a positional dissonance perception model. 
+## Requirements
 
-#### Training Strategies
-
-
-#### Evaluation Metrics
-
-##### Quantitative
-- Perplexity on held-out test set
-- Token prediction accuracy
-
-##### Qualitative (Musical)
-
-
-**Status**: 🔄 Planned
-
----
-
-## 🚀 Immediate Next Steps
-
-1. **✅ XML → MIDI Pipeline** - Complete with validation (93.4% accuracy)
-2. **✅ Voicing System** - 7 templates implemented and tested
-3. **🔧 Run Full Transposition** - Execute 12-key augmentation on all 4,000 songs → 48,000
-4. **⏳ Export MPE-MIDI Files** - Generate MPE format for all augmented progressions
-5. **⏳ Implement Tokenizer** - Design metadata + MIDI token vocabulary
-6. **⏳ Stage 3 Prototype** - Create microtonal substitution rules (10% level)
-7. **⏳ Training Pipeline** - Prepare dataset for GPT-2 training
-
----
+Python 3.10+, PyTorch, `pretty_midi`, `mido`, `music21`, `numpy`. The trainer follows the minGPT layout ([src/model.py](src/model.py), [src/configurator.py](src/configurator.py), [src/trainer.py](src/trainer.py)).
 
 ## License
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**.
-For more details, see the full license at [Creative Commons CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
-Or read the license document attached.
+
+Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0). See the bundled license file or [creativecommons.org/licenses/by-nc/4.0](https://creativecommons.org/licenses/by-nc/4.0/).
